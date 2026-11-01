@@ -18,6 +18,13 @@ import sys
 import tarfile
 import zipfile
 
+# Windows CI/konsolda çıktı kodlaması cp1252 olabilir: Türkçe karakterler çökmesin
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES = os.path.join(ROOT, "kurgu", "resources")
 DIST = os.path.join(ROOT, "dist")
@@ -113,8 +120,13 @@ def inno_setup(ver: str) -> str | None:
               "(kurulum programı için https://jrsoftware.org/isdl.php)")
         return None
     iss = os.path.join(ROOT, "packaging", "kurgu.iss")
-    subprocess.check_call([iscc, f"/DMyAppVersion={ver}", f"/DSourceDir={DIST}\\Kurgu",
-                           f"/DOutDir={DIST}", f"/DIconFile={RES}\\icon.ico", iss])
+    try:
+        subprocess.check_call([iscc, f"/DMyAppVersion={ver}", f"/DSourceDir={DIST}\\Kurgu",
+                               f"/DOutDir={DIST}", f"/DIconFile={RES}\\icon.ico", iss])
+    except subprocess.CalledProcessError as e:
+        # Kurulum programı üretilemese de taşınabilir zip yayınlansın
+        print(f"UYARI: Inno Setup başarısız oldu ({e}); yalnızca zip üretildi.")
+        return None
     return os.path.join(DIST, f"Kurgu-{ver}-setup.exe")
 
 

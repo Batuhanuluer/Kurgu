@@ -52,7 +52,11 @@ def log_error(text: str):
             f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text.rstrip() + "\n")
     except OSError:
         pass
-    print(text, file=sys.stderr) if sys.stderr else None
+    try:
+        if sys.stderr:
+            print(text, file=sys.stderr)
+    except Exception:  # konsol kodlaması Türkçe karakteri yazamazsa
+        pass
 
 
 def _excepthook(exc_type, exc, tb):

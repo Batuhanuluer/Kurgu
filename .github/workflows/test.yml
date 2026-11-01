@@ -1,5 +1,8 @@
 name: test
 on: [push, pull_request]
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
 jobs:
   test:
     strategy:
@@ -11,8 +14,8 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - if: runner.os == 'Linux'

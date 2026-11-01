@@ -5,6 +5,13 @@
 import os
 import sys
 
+# Windows CI/konsolda çıktı kodlaması cp1252 olabilir: Türkçe karakterler çökmesin
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (QColor, QGuiApplication, QImage, QLinearGradient, QPainter,

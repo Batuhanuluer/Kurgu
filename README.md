@@ -59,7 +59,7 @@ projeler korunur. Diğer sistemlerde indirme sayfası açılır. Yardım menüs�
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
-git tag v0.5.2
+git tag v0.5.3
 git push --tags
 ```
 
