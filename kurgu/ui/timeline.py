@@ -1,11 +1,13 @@
 """Zaman çizelgesi: çok izli düzenleme, taşıma, kırpma, jilet, mıknatıs, sürükle-bırak."""
 from __future__ import annotations
 
+import copy
 import threading
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QObject
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF, QPainterPath, QCursor
-from PySide6.QtWidgets import QWidget, QScrollBar, QVBoxLayout, QMenu
+from PySide6.QtWidgets import (QHBoxLayout, QMenu, QScrollBar, QToolButton, QVBoxLayout,
+                               QWidget)
 
 from .. import keyframes as kf
 from ..i18n import _
@@ -26,6 +28,30 @@ COLORS = {
     "video": QColor("#3d6fb6"), "image": QColor("#2f8f86"), "audio": QColor("#3f8a4e"),
     "text": QColor("#8a55b5"), "missing": QColor("#8a3a3a"),
 }
+
+
+EDIT_TOOLS = ("ripple", "roll", "slip", "slide")
+TOOLS = [  # (araç, kısayol, simge, ad)
+    ("select", "V", "➤", "Selection Tool"),
+    ("ripple", "B", "⇤", "Ripple Edit Tool"),
+    ("roll", "N", "⇹", "Rolling Edit Tool"),
+    ("razor", "C", "✂", "Razor Tool"),
+    ("slip", "Y", "↔", "Slip Tool"),
+    ("slide", "U", "⇆", "Slide Tool"),
+]
+
+
+def encode_source_drag(media_id: str, a: float | None, b: float | None) -> bytes:
+    """Kaynak monitöründen sürükleme verisi: 'kimlik;giriş;çıkış' (boş = işaretsiz)."""
+    return f"{media_id};{'' if a is None else a};{'' if b is None else b}".encode()
+
+
+def decode_source_drag(data: bytes):
+    """MEDIA_MIME verisi: 'kimlik' ya da 'kimlik;giriş;çıkış'."""
+    parts = bytes(data).decode().split(";")
+    a = float(parts[1]) if len(parts) > 1 and parts[1] else None
+    b = float(parts[2]) if len(parts) > 2 and parts[2] else None
+    return parts[0], a, b
 
 
 def timecode(t: float, fps: float) -> str:
@@ -308,6 +334,26 @@ class TimelineWidget(QWidget):
                 p.setBrush(QColor(20, 20, 24, 225))
                 p.drawRoundedRect(box, 4, 4)
                 p.setPen(QColor("#ffcc33") if not d.get("fine") else QColor("#7fd18b"))
+                p.drawText(box, Qt.AlignCenter, txt)
+                p.setFont(self.font())
+        if d and d.get("mode") == "tool" and d.get("pushed") and d.get("info"):
+            mc = self.project.clip_by_id(d["clip"])
+            if mc is not None:
+                label = {"ripple": _("Ripple"), "roll": _("Roll"), "slip": _("Slip"),
+                         "slide": _("Slide")}.get(d["op"], "")
+                txt = f"{label}  {d['info']}"
+                r = self.clip_rect(mc)
+                f = QFont(self.font())
+                f.setBold(True)
+                p.setFont(f)
+                tw = p.fontMetrics().horizontalAdvance(txt) + 14
+                box = QRectF(max(HEADER_W + 2, r.left()), r.top() - 22, tw, 19)
+                if box.top() < RULER_H:
+                    box.moveTop(r.bottom() + 3)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(20, 20, 24, 225))
+                p.drawRoundedRect(box, 4, 4)
+                p.setPen(QColor("#4fc3f7"))
                 p.drawText(box, Qt.AlignCenter, txt)
                 p.setFont(self.font())
         # Jilet önizlemesi ve yapışma kılavuzu
@@ -657,6 +703,22 @@ class TimelineWidget(QWidget):
             self.edited.emit()
             self.update()
             return
+        if self.tool in EDIT_TOOLS:
+            self.selected = {c.id for c in self.project.linked(clip)}
+            self.selection_changed.emit()
+            mode = self.tool_mode(pos, clip)
+            if mode is None:
+                self.update()
+                return
+            if mode[0] == "roll" and mode[2] is None:
+                mode = ("trim", mode[1], None)  # komşu yoksa normal kırpma gibi
+            self._drag = {"mode": "tool", "op": mode[0], "edge": mode[1],
+                          "clip": (mode[2] or clip).id, "x0": pos.x(), "y0": pos.y(),
+                          "t0": self.t_of(pos.x()), "pushed": False,
+                          "base": copy.deepcopy(self.project.clips),
+                          "start0": clip.start, "info": ""}
+            self.update()
+            return
         group = {c.id for c in self.project.linked(clip)}
         if ev.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
             if clip.id in self.selected:
@@ -738,6 +800,10 @@ class TimelineWidget(QWidget):
             return
         if abs(pos.x() - d["x0"]) < 3 and abs(pos.y() - d["y0"]) < 3 and not d["pushed"]:
             return
+        if d["mode"] == "tool":
+            self._begin_drag_edit()
+            self.tool_drag(d, pos)
+            return
         excl = {c.id for c in (self.drag_group(clip) if d["mode"] == "move"
                                else self.project.linked(clip))}
         if d["mode"] == "move":
@@ -785,6 +851,11 @@ class TimelineWidget(QWidget):
             if clip is not None:
                 self.selected = {c.id for c in self.project.linked(clip)}
                 self.selection_changed.emit()
+        if d and d["mode"] == "tool":
+            d.pop("base", None)
+            if d.get("pushed"):
+                self.edited.emit()
+                self.selection_changed.emit()
         if d and d["mode"] == "move" and d.get("pushed"):
             clip = self.project.clip_by_id(d["clip"])
             if clip is not None:
@@ -795,6 +866,76 @@ class TimelineWidget(QWidget):
                     self.project._clear_space(c.track, c.start, c.end, ignore=ids)
             self.edited.emit()
             self.selection_changed.emit()
+        self.update()
+
+    # ------------------------------------------------------------ düzenleme araçları
+    def tool_mode(self, pos: QPointF, clip: Clip):
+        """Araç + tıklanan yer -> (işlem, kenar, roll için soldaki klip).
+        Ripple/Roll kenarda çalışır; Slip/Slide klibin her yerinde."""
+        r = self.clip_rect(clip)
+        near_in = pos.x() - r.left() <= max(EDGE_PX, min(14, r.width() / 3))
+        near_out = r.right() - pos.x() <= max(EDGE_PX, min(14, r.width() / 3))
+        edge = "in" if near_in and (not near_out or pos.x() - r.left() < r.right() - pos.x()) \
+            else "out" if near_out else None
+        if self.tool == "slip":
+            return ("slip", None, None)
+        if self.tool == "slide":
+            return ("slide", None, None)
+        if edge is None:
+            return None
+        if self.tool == "ripple":
+            return ("ripple", edge, None)
+        # roll: kesmenin solundaki klip esas alınır
+        if edge == "out":
+            return ("roll", "out", clip if self.project.next_adjacent(clip) else None)
+        left = self.project.prev_adjacent(clip)
+        return ("roll", "in", left)
+
+    def tool_drag(self, d: dict, pos: QPointF):
+        proj = self.project
+        proj.clips = copy.deepcopy(d["base"])  # her harekette baştan uygula: tutarlı ve geri alınabilir
+        clip = proj.clip_by_id(d["clip"])
+        if clip is None:
+            return
+        fps = proj.fps
+        excl = {c.id for c in proj.linked(clip)}
+        t = self.t_of(pos.x())
+        op = d["op"]
+        show = None
+        if op == "ripple":
+            t = self.snap(t, excl, radius_px=SNAP_PX * 1.7)
+            moved = proj.ripple_trim(clip, d["edge"], t)
+            d["info"] = f"{'+' if moved >= 0 else '−'}{timecode(abs(moved), fps)}"
+            show = clip.end if d["edge"] == "out" else clip.start
+        elif op == "roll":
+            nxt = proj.next_adjacent(clip)
+            excl |= {c.id for c in proj.linked(nxt)} if nxt is not None else set()
+            t = self.snap(t, excl, radius_px=SNAP_PX * 1.7)
+            cut0 = clip.end
+            cut = proj.roll(clip, t)
+            delta = cut - cut0
+            d["info"] = f"{'+' if delta >= 0 else '−'}{timecode(abs(delta), fps)}"
+            show = cut
+        elif op == "trim":
+            t = self.snap(t, excl, radius_px=SNAP_PX * 1.7)
+            proj.trim(clip, d["edge"], t)
+            show = clip.start if d["edge"] == "in" else clip.end
+        elif op == "slip":
+            dt = round((t - d["t0"]) * fps) / fps
+            got = proj.slip(clip, -dt * clip.speed)
+            d["info"] = (f"{_('In')} {timecode(clip.in_point, fps)}   "
+                         f"{_('Out')} {timecode(clip.out_point, fps)}   "
+                         f"{'+' if got >= 0 else '−'}{timecode(abs(got), fps)}")
+            show = clip.start
+        elif op == "slide":
+            s0 = self.snap(d["start0"] + t - d["t0"], excl, radius_px=SNAP_PX * 1.7)
+            got = proj.slide(clip, round((s0 - d["start0"]) * fps) / fps)
+            d["info"] = f"{'+' if got >= 0 else '−'}{timecode(abs(got), fps)}"
+            show = clip.start
+        self.edited.emit()
+        if show is not None and not self.main.player.playing:
+            # Kesme/kaynak karesini program monitöründe göster (Premiere'deki gibi)
+            self.main.monitor.refresh(min(max(show, 0.0), max(proj.duration - 1e-3, 0.0)))
         self.update()
 
     def drag_group(self, clip: Clip) -> list[Clip]:
@@ -841,6 +982,18 @@ class TimelineWidget(QWidget):
                 self.snap_hit = None
             if self.razor_hover != old:
                 self.update()
+            return
+        if self.tool in EDIT_TOOLS:
+            c = self.clip_at(pos)
+            mode = self.tool_mode(pos, c) if c is not None else None
+            if mode is None:
+                self.setCursor(Qt.ForbiddenCursor if c is not None else Qt.ArrowCursor)
+            elif mode[0] == "roll":
+                self.setCursor(Qt.SplitHCursor if mode[2] is not None else Qt.SizeHorCursor)
+            elif mode[0] == "slide":
+                self.setCursor(Qt.SizeAllCursor)
+            else:
+                self.setCursor(Qt.SizeHorCursor)
             return
         if self.key_at(pos) is not None:
             self.setCursor(Qt.PointingHandCursor)
@@ -979,12 +1132,13 @@ class TimelineWidget(QWidget):
             ev.acceptProposedAction()
             return
         if md.hasFormat(MEDIA_MIME):
-            mid = bytes(md.data(MEDIA_MIME)).decode()
+            mid, a, b = decode_source_drag(md.data(MEDIA_MIME))
             m = self.project.media.get(mid)
             ti = self.track_at(ev.position().y())
             if m is not None and ti is not None:
                 t0 = self.snap(self.t_of(ev.position().x()), radius_px=18)
-                dur = m.duration if m.kind != "image" else 5.0
+                full = m.duration if m.kind != "image" else 5.0
+                dur = (b if b is not None else full) - (a or 0.0)
                 self._drop_preview = (ti, t0, dur)
                 self.update()
         ev.acceptProposedAction()
@@ -1017,9 +1171,10 @@ class TimelineWidget(QWidget):
                 self.main.place_media(m, t0, ti)
                 t0 += m.duration if m.kind != "image" else 5.0
         elif md.hasFormat(MEDIA_MIME):
-            m = self.project.media.get(bytes(md.data(MEDIA_MIME)).decode())
+            mid, a, b = decode_source_drag(md.data(MEDIA_MIME))
+            m = self.project.media.get(mid)
             if m is not None:
-                self.main.place_media(m, t0, ti)
+                self.main.place_media(m, t0, ti, a, b)
         ev.acceptProposedAction()
         self.update()
 
@@ -1032,11 +1187,34 @@ class TimelinePanel(QWidget):
         self.timeline = TimelineWidget(main)
         self.bar = QScrollBar(Qt.Horizontal)
         self.bar.valueChanged.connect(self._on_bar)
-        lay = QVBoxLayout(self)
+        tools = QVBoxLayout()
+        tools.setContentsMargins(2, 2, 2, 2)
+        tools.setSpacing(2)
+        self.tool_buttons = {}
+        for key, sc, icon, name in TOOLS:
+            b = QToolButton()
+            b.setText(icon)
+            b.setCheckable(True)
+            b.setAutoRaise(True)
+            b.setFixedSize(30, 28)
+            b.setToolTip(f"{_(name)} ({sc})")
+            b.setStyleSheet("QToolButton { font-size: 15px; } "
+                            "QToolButton:checked { background:#3d5a80; border-radius:4px; }")
+            b.clicked.connect(lambda _c=False, k=key: main.set_tool(k))
+            tools.addWidget(b)
+            self.tool_buttons[key] = b
+        tools.addStretch(1)
+        self.tool_buttons["select"].setChecked(True)
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.timeline, 1)
+        col.addWidget(self.bar)
+        lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        lay.addWidget(self.timeline, 1)
-        lay.addWidget(self.bar)
+        lay.addLayout(tools)
+        lay.addLayout(col, 1)
         self._syncing = False
 
     def sync_scrollbar(self):

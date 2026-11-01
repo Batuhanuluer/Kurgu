@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QImage, QKeyS
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDockWidget,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QInputDialog,
                                QMainWindow, QMessageBox, QProgressDialog, QSpinBox, QLineEdit,
-                               QPushButton, QHBoxLayout, QWidget)
+                               QPushButton, QHBoxLayout, QWidget, QSplitter, QApplication)
 
 from .. import __version__
 from ..i18n import _
@@ -166,9 +166,19 @@ class MainWindow(QMainWindow):
         self.timeline_panel = TimelinePanel(self)
         self.timeline = self.timeline_panel.timeline
         self.monitor = ProgramMonitor(self)
+        self.source_marks: dict[str, tuple] = {}  # medya kimliği -> (giriş, çıkış)
+        from .source import SourceMonitor
+        self.source = SourceMonitor(self)
+        self.monitors = QSplitter(Qt.Horizontal)
+        self.monitors.addWidget(self.source)
+        self.monitors.addWidget(self.monitor)
+        self.monitors.setStretchFactor(0, 1)
+        self.monitors.setStretchFactor(1, 1)
+        self.monitors.setChildrenCollapsible(True)
+        self.monitors.setSizes([1, 1])
         self.bin = MediaBin(self)
         self.inspector = Inspector(self)
-        self.setCentralWidget(self.monitor)
+        self.setCentralWidget(self.monitors)
         self.setAcceptDrops(True)
         self.setDockNestingEnabled(True)
         self.effects_panel = EffectsPanel(self)
@@ -304,13 +314,16 @@ class MainWindow(QMainWindow):
 
         v = mb.addMenu(_("View"))
         tools = QActionGroup(self)
-        self.select_tool = self._act(v, _("Selection Tool"), lambda: self.set_tool("select"),
-                                     "V", True)
-        self.razor_tool = self._act(v, _("Razor Tool"), lambda: self.set_tool("razor"), "C",
-                                    True)
-        tools.addAction(self.select_tool)
-        tools.addAction(self.razor_tool)
+        from .timeline import TOOLS
+        self.tool_actions = {}
+        for key, sc, _icon, name in TOOLS:
+            a = self._act(v, _(name), lambda _c=False, k=key: self.set_tool(k), sc, True)
+            tools.addAction(a)
+            self.tool_actions[key] = a
+        self.select_tool = self.tool_actions["select"]
+        self.razor_tool = self.tool_actions["razor"]
         self.select_tool.setChecked(True)
+        v.addSeparator()
         ap = self._act(v, _("Auto-create proxies for heavy videos"),
                        lambda on: self.settings.setValue("auto_proxy", on), checkable=True)
         ap.setChecked(self.settings.value("auto_proxy", True, type=bool))
@@ -331,17 +344,22 @@ class MainWindow(QMainWindow):
         h.addSeparator()
         self._act(h, _("About Kurgu"), self.about)
 
-        # Menüde görünmeyen oynatma kısayolları
-        self._act(None, "play", self.player.toggle, "Space")
-        self._act(None, "j", lambda: self.player.shuttle(-1), "J")
-        self._act(None, "k", lambda: self.player.shuttle(0), "K")
-        self._act(None, "l", lambda: self.player.shuttle(1), "L")
+        # Menüde görünmeyen oynatma kısayolları (kaynak monitörü odaktaysa ona gider)
+        self._act(None, "play", lambda: self._player().toggle(), "Space")
+        self._act(None, "j", lambda: self._player().shuttle(-1), "J")
+        self._act(None, "k", lambda: self._player().shuttle(0), "K")
+        self._act(None, "l", lambda: self._player().shuttle(1), "L")
         self._act(None, "prev", lambda: self.step_frames(-1), "Left")
         self._act(None, "next", lambda: self.step_frames(1), "Right")
         self._act(None, "prev10", lambda: self.step_frames(-10), "Shift+Left")
         self._act(None, "next10", lambda: self.step_frames(10), "Shift+Right")
         self._act(None, "home", self.go_start, "Home")
         self._act(None, "end", self.go_end, "End")
+        self._act(None, "mark-in", self.mark_in, "I")
+        self._act(None, "mark-out", self.mark_out, "O")
+        self._act(None, "clear-io", self.clear_marks, "Ctrl+Shift+X")
+        self._act(None, "insert", lambda: self.source.edit("insert"), ",")
+        self._act(None, "overwrite", lambda: self.source.edit("overwrite"), ".")
         self._act(None, "up", lambda: self.jump_edit(-1), "Up")
         self._act(None, "nudge-1", lambda: self.nudge_selected(-1), "Alt+Left")
         self._act(None, "nudge+1", lambda: self.nudge_selected(1), "Alt+Right")
@@ -412,27 +430,60 @@ class MainWindow(QMainWindow):
             self.monitor.refresh(t)
 
     def set_tool(self, tool):
+        from .timeline import TOOLS
         self.timeline.tool = tool
         self.timeline.razor_hover = None
         self.timeline.snap_hit = None
         self.timeline.update()
-        self.statusBar().showMessage(_("Razor Tool") if tool == "razor" else _("Selection Tool"))
+        for key, b in self.timeline_panel.tool_buttons.items():
+            b.setChecked(key == tool)
+        a = getattr(self, "tool_actions", {}).get(tool)
+        if a is not None and not a.isChecked():
+            a.setChecked(True)
+        name = next((n for k, _s, _i, n in TOOLS if k == tool), "Selection Tool")
+        hints = {"ripple": _("drag an edge: later clips follow, no gaps"),
+                 "roll": _("drag a cut: moves the edit point between two clips"),
+                 "slip": _("drag a clip: changes which part of the source is used"),
+                 "slide": _("drag a clip: moves it between its neighbours")}
+        msg = _(name) + (" — " + hints[tool] if tool in hints else "")
+        self.statusBar().showMessage(msg)
 
     def toggle_snap(self, on):
         self.timeline.snapping = on
 
     # ------------------------------------------------------------ gezinme
+    def source_active(self) -> bool:
+        """Klavye odağı kaynak monitöründe mi? (Space/J/K/L/oklar/I/O ona gider)"""
+        w = QApplication.focusWidget()
+        while w is not None:
+            if w is self.source:
+                return self.source.media is not None
+            w = w.parentWidget()
+        return False
+
+    def _player(self):
+        return self.source.player if self.source_active() else self.player
+
     def step_frames(self, n):
+        if self.source_active():
+            self.source.step(n)
+            return
         if self.player.playing:
             self.player.pause()
         self.timeline.set_playhead(self.timeline.playhead + n / self.project.fps)
         self.timeline.ensure_visible(self.timeline.playhead)
 
     def go_start(self):
+        if self.source_active():
+            self.source.seek(0.0)
+            return
         self.timeline.set_playhead(0.0)
         self.timeline.ensure_visible(0.0)
 
     def go_end(self):
+        if self.source_active():
+            self.source.seek(self.source.duration())
+            return
         self.timeline.set_playhead(self.project.duration)
         self.timeline.ensure_visible(self.project.duration)
 
@@ -490,13 +541,60 @@ class MainWindow(QMainWindow):
     def remove_media(self, ids):
         self.before_edit()
         ids = set(ids)
+        self.source.unload_if(ids)
         self.project.clips = [c for c in self.project.clips if c.media_id not in ids]
         for i in ids:
             self.project.media.pop(i, None)
         self.bin.rebuild()
         self.on_edited()
 
-    def place_media(self, m: MediaItem, t: float, track_hint: int | None):
+    # ------------------------------------------------------------ kaynak monitörü
+    def open_in_source(self, m: MediaItem):
+        self.source.load(m)
+
+    def mark_in(self):
+        if self.source_active():
+            self.source.mark_in()
+
+    def mark_out(self):
+        if self.source_active():
+            self.source.mark_out()
+
+    def clear_marks(self):
+        if self.source_active():
+            self.source.clear_marks()
+
+    def source_edit(self, m: MediaItem, a, b, mode="overwrite"):
+        """Kaynak monitöründeki işaretli parçayı oynatma kafasına koy (Ekle , / Üzerine Yaz .)."""
+        p = self.project
+        m = p.media.get(m.id) or p.add_media(m)  # geri alma sonrası nesne değişmiş olabilir
+        t = self.timeline.playhead
+        vt = next((i for i in p.track_indices("video") if not p.tracks[i].locked), None)
+        at = next((i for i in p.track_indices("audio") if not p.tracks[i].locked), None)
+        if (vt is None and (m.has_video or m.kind == "image")) and (at is None or not m.has_audio):
+            self.statusBar().showMessage(_("All tracks are locked"), 4000)
+            return
+        if self.player.playing:
+            self.player.pause()
+        first = not any(p.track_is_video(c.track) for c in p.clips)
+        self.before_edit()
+        if first and self._mismatch(m):
+            self._ask_match_sequence(m)
+        fn = p.insert_media if mode == "insert" else p.place_media
+        made = fn(m, t, vt, at, a, b, video=vt is not None, audio=at is not None)
+        if not made:
+            self.on_edited()
+            return
+        self.timeline.selected = {c.id for c in made}
+        end = max(c.end for c in made)
+        self.on_edited()
+        self.timeline.set_playhead(end)
+        self.timeline.ensure_visible(end)
+        self.statusBar().showMessage(
+            (_("Inserted") if mode == "insert" else _("Overwritten")) + f": {m.name}", 3000)
+
+    def place_media(self, m: MediaItem, t: float, track_hint: int | None,
+                    in_point: float | None = None, out_point: float | None = None):
         p = self.project
         vt = at = None
         if track_hint is not None and not p.tracks[track_hint].locked:
@@ -508,7 +606,7 @@ class MainWindow(QMainWindow):
         self.before_edit()
         if first and self._mismatch(m):
             self._ask_match_sequence(m)
-        made = p.place_media(m, t, vt, at)
+        made = p.place_media(m, t, vt, at, in_point, out_point)
         self.timeline.selected = {c.id for c in made}
         self.on_edited()
 
@@ -889,9 +987,9 @@ class MainWindow(QMainWindow):
 
         def work():
             try:
-                path = updater.download(info["setup_url"],
-                                        progress=lambda d, t: b.prog.emit(int(d * 1000 / t)),
-                                        cancelled=lambda: state["cancel"])
+                path = updater.download_verified(
+                    info, progress=lambda d, t: b.prog.emit(int(d * 1000 / t)),
+                    cancelled=lambda: state["cancel"])
                 b.done.emit(path, "")
             except Exception as e:
                 b.done.emit("", str(e))
@@ -947,6 +1045,10 @@ class MainWindow(QMainWindow):
         self.use_proxy = bool(on)
         self.settings.setValue("use_proxy", self.use_proxy)
         self.monitor.pool.use_proxy = self.use_proxy
+        self.source.pool.use_proxy = self.use_proxy
+        self.source.pool.close()
+        if self.source.media is not None:
+            self.source._show(self.source.clock.playhead)
         self._proxy_changed()
         self.statusBar().showMessage(_("Proxies on: preview uses light copies") if on else
                                      _("Proxies off: preview uses original files"), 3000)
@@ -1417,6 +1519,8 @@ class MainWindow(QMainWindow):
         self.timeline.waves.clear()
         self.timeline.selected.clear()
         self.monitor.reset()
+        self.source.unload()
+        self.source_marks.clear()
         self.cache.clear()
         self.worker.reset_sources()
         self.version += 1
@@ -1435,10 +1539,14 @@ class MainWindow(QMainWindow):
             self.open_project(path)
 
     def open_project(self, path):
+        from ..safety import RemotePathsError
         try:
-            p = Project.load(path)
+            try:
+                p = Project.load(path)
+            except RemotePathsError as e:
+                p = Project.load(path, remote=self._ask_remote_paths(e.paths))
         except Exception as e:
-            QMessageBox.critical(self, "Kurgu", str(e))
+            self._plain_box(QMessageBox.Critical, "Kurgu", str(e))
             return
         self.player.pause()
         self.project = p
@@ -1447,6 +1555,8 @@ class MainWindow(QMainWindow):
         self.timeline.waves.clear()
         self.timeline.selected.clear()
         self.monitor.reset()
+        self.source.unload()
+        self.source_marks.clear()
         self.cache.clear()
         self.worker.reset_sources()
         self.version += 1
@@ -1472,10 +1582,34 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 _("Recovered project opened. Save it (Ctrl+S) to keep the changes."), 10000)
         if missing:
-            QMessageBox.warning(self, _("Missing media"), "\n".join(missing))
+            self._plain_box(QMessageBox.Warning, _("Missing media"), "\n".join(missing))
+
+    def _plain_box(self, icon, title, text):
+        """Dosyadan gelen metin HTML olarak yorumlanmasın (ör. <img src=\\\\sunucu\\…>)."""
+        box = QMessageBox(icon, title, text, QMessageBox.Ok, self)
+        box.setTextFormat(Qt.PlainText)
+        box.exec()
+
+    def _ask_remote_paths(self, paths) -> str:
+        """Projede ağ yolları var: açmak Windows'ta kimlik bilgisini o sunucuya gönderebilir."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(_("Network paths in project"))
+        box.setTextFormat(Qt.PlainText)
+        box.setText(_("This project refers to files on network locations. Opening them "
+                      "contacts those computers and, on Windows, can send your login "
+                      "credentials to them. Only allow this if you trust where the project "
+                      "came from."))
+        box.setDetailedText("\n".join(paths[:50]))
+        allow = box.addButton(_("Allow network files"), QMessageBox.AcceptRole)
+        safe = box.addButton(_("Open without them"), QMessageBox.RejectRole)
+        box.setDefaultButton(safe)
+        box.exec()
+        return "allow" if box.clickedButton() is allow else "strip"
 
     def save(self) -> bool:
-        if not self.project.path:
+        if not self.project.path or getattr(self.project, "recovered", False):
+            # Kurtarılan proje: hedefi her zaman kullanıcı onaylasın (Farklı Kaydet)
             return self.save_as()
         try:
             self.project.save(self.project.path)
@@ -1490,15 +1624,18 @@ class MainWindow(QMainWindow):
         return True
 
     def save_as(self) -> bool:
+        from ..safety import valid_project_target
         last = self.settings.value("last_dir", os.path.expanduser("~"))
-        path, _f = QFileDialog.getSaveFileName(self, _("Save As…"),
-                                               os.path.join(last, "project.kurgu"),
+        default = self.project.path if valid_project_target(self.project.path) else \
+            os.path.join(last, "project.kurgu")
+        path, _f = QFileDialog.getSaveFileName(self, _("Save As…"), default,
                                                f"{_('Kurgu project')} (*.kurgu)")
         if not path:
             return False
         if not path.lower().endswith(".kurgu"):
             path += ".kurgu"
         self.project.path = path
+        self.project.recovered = False
         return self.save()
 
     def export_dialog(self):
@@ -1548,6 +1685,10 @@ class MainWindow(QMainWindow):
             ("← / →", _("Previous Frame") + " / " + _("Next Frame")),
             ("↑ / ↓", "◀| / |▶"), ("Home / End", _("Go to Start") + " / " + _("Go to End")),
             ("V", _("Selection Tool")), ("C", _("Razor Tool")), ("S", _("Snapping")),
+            ("B", _("Ripple Edit Tool")), ("N", _("Rolling Edit Tool")),
+            ("Y", _("Slip Tool")), ("U", _("Slide Tool")),
+            ("I / O", _("Mark In") + " / " + _("Mark Out")),
+            (", / .", _("Insert") + " / " + _("Overwrite")),
             ("Ctrl+K", _("Split at Playhead")), ("Delete", _("Delete")),
             ("Shift+Delete", _("Ripple Delete")), ("Ctrl+D", _("Apply Default Transition")),
             ("Ctrl+C / Ctrl+V", _("Copy") + " / " + _("Paste")),

@@ -18,7 +18,7 @@ def test_autosave_rotation_and_recover_path(tmp_path, red_video):
         time.sleep(0.01)
     lst = autosave.list_autosaves(str(tmp_path / "as"))
     assert len(lst) == autosave.KEEP and lst[0]["uid"] == p.uid
-    q = Project.load(lst[0]["path"])
+    q = Project.load(lst[0]["path"], autosave_dir=str(tmp_path / "as"))
     assert q.recovered and q.path == p.path and q.uid == p.uid and len(q.clips) == 2
 
 

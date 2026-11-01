@@ -56,6 +56,10 @@ durum çubuğunda **⬆ Yeni sürüm** düğmesi çıkar. Windows'ta kurulum pro
 projeler korunur. Diğer sistemlerde indirme sayfası açılır. Yardım menüsünden kapatılabilir
 (yalnızca herkese açık GitHub API'sine sürüm sorgusu yapılır).
 
+Kendini güncelleme yalnızca sürüm, geliştiricinin çevrim dışı anahtarıyla **imzalanmışsa**
+çalışır: indirilen kurulumun SHA-256 özeti imzalı `SHA256SUMS.txt` ile karşılaştırılır,
+uyuşmazsa dosya silinir ve çalıştırılmaz. İmzasız sürümlerde indirme sayfası açılır.
+
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
@@ -64,14 +68,31 @@ git push --tags
 ```
 
 GitHub Actions üç işletim sisteminde testleri çalıştırır, paketleri derler ve
-Releases sayfasına yükler (`.github/workflows/release.yml`).
+Releases sayfasına yükler (`.github/workflows/release.yml`). Paketler sabit sürümlü
+bağımlılıklarla (`packaging/requirements-release.txt`) derlenir.
 
-## Özellikler (v0.7)
+**Sürümü imzalamak** (Windows'ta otomatik güncelleme için gerekli):
+
+```bash
+pip install cryptography
+python packaging/make_signing_key.py      # yalnızca bir kez: anahtar üretir
+# çıktıdaki PUBLIC_KEYS satırını kurgu/updater.py'ye yapıştır, commit et
+python packaging/sign_release.py v0.8.1   # her sürümden sonra (GitHub CLI "gh" gerekir)
+```
+
+Gizli anahtar `~/.kurgu-signing/` klasöründe kalır; depoya ya da GitHub'a yüklenmez.
+Ayrıntılar: [SECURITY.md](SECURITY.md).
+
+## Özellikler (v0.8)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
 - **Düzenleme:** taşıma, kenardan kırpma, jilet aracı, oynatma kafasında bölme,
   silme, boşluğu kapatarak silme (ripple), çoğaltma, mıknatıs (snapping), işaretçiler
+- **Kaynak monitörü:** medyaya çift tıkla, izle, I/O ile parçasını işaretle; Ekle (`,`) sonrakileri
+  iterek araya koyar, Üzerine Yaz (`.`) yerine yazar; görüntüyü sürükleyip zaman çizelgesine bırak
+- **Profesyonel kesme araçları:** Ripple (B), Roll (N), Slip (Y), Slide (U); bağlı ses/görüntü
+  birlikte düzenlenir, kesme karesi program monitöründe görünür
 - **Bağlı klipler:** videonun görüntüsü ve sesi birlikte hareket eder, istenirse ayrılır
 - **Sınırsız geri al / yinele**
 - **Program monitörü:** sesli gerçek zamanlı oynatma, J/K/L ile hızlı ileri/geri
@@ -155,11 +176,15 @@ Releases sayfasına yükler (`.github/workflows/release.yml`).
 
 | Tuş | İşlev |
 |---|---|
-| Boşluk | Oynat / duraklat |
+| Boşluk | Oynat / duraklat (kaynak monitörü odaktaysa onu oynatır) |
 | J / K / L | Geri sar / dur / ileri sar (tekrar basınca hızlanır) |
 | ← / → | Bir kare geri / ileri (Shift ile 10 kare) |
 | ↑ / ↓ | Önceki / sonraki kesme noktası |
 | V / C | Seçim aracı / jilet aracı |
+| B / N | Ripple aracı (kenarı çek, sonrakiler takip etsin) / Roll aracı (kesmeyi kaydır) |
+| Y / U | Slip aracı (kaynağı kaydır) / Slide aracı (klibi komşuları arasında kaydır) |
+| I / O | Kaynak monitöründe giriş / çıkış işaretle |
+| , / . | Kaynaktan ekle / üzerine yaz (oynatma kafasına) |
 | Ctrl+K | Oynatma kafasında böl |
 | Delete / Shift+Delete | Sil / boşluğu kapatarak sil |
 | Boşluğa tıkla + Delete | İki klip arasındaki boşluğu sil, sonraki klipler sola kayar |
@@ -207,6 +232,7 @@ kurgu/
     main_window.py  Menüler, kısayollar, proje işlemleri, dışa aktarma penceresi
     timeline.py     Zaman çizelgesi bileşeni
     player.py       Program monitörü ve ses senkronlu oynatma
+    source.py       Kaynak monitörü (I/O, Ekle / Üzerine Yaz)
     panels.py       Medya kutusu ve denetçi (efekt kontrolleri dahil)
     effects_panel.py Efektler paneli
 tests/            pytest testleri (sentetik videolarla)
@@ -221,7 +247,8 @@ görüyorsanız çıktıda da onu alırsınız.
 Katkılarınızı bekleyen başlıca konular:
 
 - [x] Anahtar kare (keyframe) animasyonu
-- [ ] Kaynak monitörü ve giriş/çıkış noktalarıyla (I/O) ekleme
+- [x] Kaynak monitörü ve giriş/çıkış noktalarıyla (I/O) ekleme
+- [x] Ripple / Roll / Slip / Slide araçları
 - [x] Klipler arası geçişler (16 tür)
 - [x] Chroma key, luma key ve 18 video efekti
 - [x] LUT (.cube) desteği ve renk eşleştirme

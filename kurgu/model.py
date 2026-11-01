@@ -187,23 +187,59 @@ class Project:
         return self.tracks[idx].kind == "video"
 
     # ------------------------------------------------------------ düzenleme
-    def place_media(self, media: MediaItem, start: float, video_track: int | None = None,
-                    audio_track: int | None = None) -> list[Clip]:
-        """Medyayı zaman çizelgesine koyar; videonun sesi bağlı ses klibi olur."""
-        dur = media.duration if media.kind != "image" else IMAGE_DEFAULT_DURATION
-        link = new_id() if (media.has_video and media.has_audio) else ""
+    def _new_clips(self, media: MediaItem, start: float, video_track, audio_track,
+                   in_point, out_point, video=True, audio=True) -> list[Clip]:
+        full = media.duration if media.kind != "image" else IMAGE_DEFAULT_DURATION
+        a = 0.0 if in_point is None else max(0.0, in_point)
+        b = full if out_point is None else min(out_point, full if media.kind != "image" else 3600)
+        b = max(b, a + 1.0 / self.fps)
+        want_v = video and (media.has_video or media.kind == "image")
+        want_a = audio and media.has_audio
+        link = new_id() if (want_v and want_a) else ""
         made: list[Clip] = []
-        if media.has_video or media.kind == "image":
+        if want_v:
             vt = video_track if video_track is not None else self.track_indices("video")[0]
-            made.append(Clip(track=vt, start=start, in_point=0.0, out_point=dur,
+            made.append(Clip(track=vt, start=start, in_point=a, out_point=b,
                              media_id=media.id, name=media.name, link_id=link))
-        if media.has_audio:
+        if want_a:
             at = audio_track if audio_track is not None else self.track_indices("audio")[0]
-            made.append(Clip(track=at, start=start, in_point=0.0, out_point=dur,
+            made.append(Clip(track=at, start=start, in_point=a, out_point=b,
                              media_id=media.id, name=media.name, link_id=link))
+        return made
+
+    def place_media(self, media: MediaItem, start: float, video_track: int | None = None,
+                    audio_track: int | None = None, in_point: float | None = None,
+                    out_point: float | None = None, video: bool = True,
+                    audio: bool = True) -> list[Clip]:
+        """Medyayı zaman çizelgesine koyar (Üzerine Yaz); videonun sesi bağlı ses klibi olur.
+        in_point/out_point verilirse kaynağın yalnızca o aralığı kullanılır."""
+        made = self._new_clips(media, start, video_track, audio_track, in_point, out_point,
+                               video, audio)
         for c in made:
             self._clear_space(c.track, c.start, c.end)
             self.clips.append(c)
+        return made
+
+    def insert_media(self, media: MediaItem, start: float, video_track: int | None = None,
+                     audio_track: int | None = None, in_point: float | None = None,
+                     out_point: float | None = None, video: bool = True,
+                     audio: bool = True) -> list[Clip]:
+        """Ekle (Premiere ","): oynatma kafasındaki klipleri böler, sonrasını iterek araya
+        koyar; hiçbir şey silinmez. Tüm kilitsiz izler birlikte kayar (senkron korunur)."""
+        made = self._new_clips(media, start, video_track, audio_track, in_point, out_point,
+                               video, audio)
+        if not made:
+            return made
+        d = made[0].duration
+        eps = self.adj_tol
+        unlocked = [i for i, tr in enumerate(self.tracks) if not tr.locked]
+        self.split_at(start, [c.id for c in self.clips
+                              if c.track in unlocked and c.start + eps < start < c.end - eps])
+        for c in self.clips:
+            if c.track in unlocked and c.start >= start - eps:
+                c.start += d
+        self.markers = [m + d if m >= start - eps else m for m in self.markers]
+        self.clips.extend(made)
         return made
 
     def add_text(self, text: str, start: float, track: int | None = None) -> Clip:
@@ -462,6 +498,101 @@ class Project:
                 self.markers[i] = m - d
         return True
 
+    # ------------------------------------------------------------ kesme araçları
+    def _frame(self) -> float:
+        return 1.0 / self.fps
+
+    def _shift_after(self, t: float, d: float, skip: set):
+        """t ve sonrasında başlayan klipleri (kilitsiz izlerde) d kadar kaydır."""
+        eps = self.adj_tol
+        for c in self.clips:
+            if c.id not in skip and not self.tracks[c.track].locked and c.start >= t - eps:
+                c.start += d
+
+    def ripple_trim(self, clip: Clip, edge: str, t: float) -> float:
+        """Ripple (B): kenarı t'ye çek, sonraki klipler boşluk bırakmadan kaysın.
+        Döndürülen değer: zaman çizelgesindeki kayma miktarı."""
+        group = self.linked(clip)
+        ids = {c.id for c in group}
+        f = self._frame()
+        old_end = clip.end
+        if edge == "out":
+            max_end = clip.start + (self.max_out(clip) - clip.in_point) / clip.speed
+            new_end = min(max(t, clip.start + f), max_end)
+            d = new_end - old_end
+            for c in group:
+                c.out_point = c.in_point + (new_end - c.start) * c.speed
+        else:  # in: klip yerinde kalır, içeriği ve sonu kayar
+            d = t - clip.start
+            d = max(d, -clip.in_point / clip.speed)  # kaynağın başından öteye gidemez
+            d = min(d, clip.duration - f)
+            for c in group:
+                c.in_point += d * c.speed
+            d = -d
+        self._shift_after(old_end, d, ids)
+        return d
+
+    def _roll_pair(self, left: Clip, right: Clip, t: float) -> float:
+        f = self._frame()
+        lo = max(left.start + f, right.start - right.in_point / right.speed)
+        hi = min(right.end - f, left.start + (self.max_out(left) - left.in_point) / left.speed)
+        t = min(max(t, lo), hi)
+        left.out_point = left.in_point + (t - left.start) * left.speed
+        right.in_point = right.source_time(t)
+        right.start = t
+        return t
+
+    def roll(self, left: Clip, t: float) -> float:
+        """Roll (N): iki bitişik klibin arasındaki kesmeyi t'ye taşı (toplam süre değişmez)."""
+        right = self.next_adjacent(left)
+        if right is None:
+            return left.end
+        t = self._roll_pair(left, right, t)
+        for lp in self.linked(left):  # bağlı ses/görüntü de aynı kesmeyi kaydırsın
+            if lp is left:
+                continue
+            rp = self.next_adjacent(lp)
+            if rp is not None and right.link_id and rp.link_id == right.link_id:
+                self._roll_pair(lp, rp, t)
+        return t
+
+    def slip(self, clip: Clip, d_src: float) -> float:
+        """Slip (Y): klibin yeri ve süresi sabit; kaynakta d_src saniye kaydır."""
+        group = self.linked(clip)
+        lo = max(-c.in_point for c in group)
+        hi = min(self.max_out(c) - c.out_point for c in group)
+        d = min(max(d_src, lo), hi)
+        for c in group:
+            c.in_point += d
+            c.out_point += d
+        return d
+
+    def slide(self, clip: Clip, dt: float) -> float:
+        """Slide (U): klibi komşuları arasında kaydır; soldaki uzar/kısalır, sağdaki tersine.
+        Klibin içeriği ve süresi değişmez, toplam süre değişmez."""
+        f = self._frame()
+        group = self.linked(clip)
+        pairs = [(c, self.prev_adjacent(c), self.next_adjacent(c)) for c in group]
+        lo, hi = -1e9, 1e9
+        for c, l, r in pairs:
+            if l is not None:
+                lo = max(lo, -(l.duration - f))
+                hi = min(hi, (self.max_out(l) - l.out_point) / l.speed)
+            else:
+                lo = max(lo, -c.start)
+            if r is not None:
+                hi = min(hi, r.duration - f)
+                lo = max(lo, -r.in_point / r.speed)
+        dt = min(max(dt, lo), hi)
+        for c, l, r in pairs:
+            if l is not None:
+                l.out_point += dt * l.speed
+            if r is not None:
+                r.in_point += dt * r.speed
+                r.start += dt
+            c.start += dt
+        return dt
+
     def snap_points(self, exclude: Iterable[str] = ()) -> list[float]:
         ex = set(exclude)
         pts = [0.0] + list(self.markers)
@@ -500,6 +631,9 @@ class Project:
         return p
 
     def save(self, path: str):
+        from .safety import PROJECT_EXT
+        if not str(path).lower().endswith(PROJECT_EXT):
+            raise ValueError(f"Proje yalnızca {PROJECT_EXT} uzantılı dosyaya kaydedilir: {path}")
         data = self.to_dict()
         base = os.path.dirname(os.path.abspath(path))
         for m in data["media"]:  # taşınabilirlik için göreli yol da sakla
@@ -514,19 +648,44 @@ class Project:
         self.path = path
 
     @classmethod
-    def load(cls, path: str) -> "Project":
+    def load(cls, path: str, remote: str = "error",
+             autosave_dir: str | None = None) -> "Project":
+        """Proje dosyasını açar. Dosya güvenilmeyen bir kaynaktan gelebilir:
+
+        - remote: ağ (UNC/URL) yolları için "error" (RemotePathsError fırlat, hiçbirine
+          dokunma), "allow" (kullanıcı onayladı) ya da "strip" (yolları boşalt).
+        - "autosave" bilgisi (kaydedilecek asıl yol) yalnızca dosya gerçekten otomatik kayıt
+          klasöründeyse dikkate alınır; aksi halde kötü niyetli bir dosya kaydetme yolunu
+          diskte istediği yere yönlendirebilirdi.
+        """
+        from . import safety
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("Geçersiz proje dosyası")
+        bad = safety.remote_paths(data)
+        if bad and remote == "error":
+            raise safety.RemotePathsError(bad)
+        if bad and remote == "strip":
+            safety.strip_remote_paths(data)
         base = os.path.dirname(os.path.abspath(path))
         for m in data.get("media", []):
-            if not os.path.exists(m["path"]) and m.get("relpath"):
-                cand = os.path.normpath(os.path.join(base, m["relpath"]))
+            rel = m.get("relpath")
+            if rel and (os.path.isabs(rel) or safety.is_remote_path(rel)):
+                rel = None  # göreli yol olmalı
+            if rel and not os.path.exists(m.get("path") or ""):
+                cand = os.path.normpath(os.path.join(base, rel))
                 if os.path.exists(cand):
                     m["path"] = cand
         p = cls.from_dict(data)
-        p.path = path
-        if "autosave" in data:  # otomatik kayıt: asıl dosyaya kaydedilsin
-            p.path = data["autosave"].get("original_path")
+        # Yalnızca .kurgu dosyasının kendisine geri kaydedilir; başka uzantı -> Farklı Kaydet
+        p.path = path if path.lower().endswith(safety.PROJECT_EXT) else None
+        if autosave_dir is None:
+            from .autosave import AUTOSAVE_DIR as autosave_dir
+        info = data.get("autosave")
+        if isinstance(info, dict) and safety.is_inside(path, autosave_dir):
+            orig = info.get("original_path")
+            p.path = orig if safety.valid_project_target(orig) else None
             p.recovered = True
         return p
 

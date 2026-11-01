@@ -475,6 +475,8 @@ def load_cube(path: str) -> np.ndarray:
             up = line.upper()
             if up.startswith("LUT_3D_SIZE"):
                 size = int(line.split()[1])
+                if not 2 <= size <= 256:  # bozuk/kötü niyetli dosya bellek tüketmesin
+                    raise ValueError("Desteklenmeyen LUT boyutu")
             elif up.startswith("DOMAIN_MIN"):
                 dmin = np.array([float(v) for v in line.split()[1:4]])
             elif up.startswith("DOMAIN_MAX"):

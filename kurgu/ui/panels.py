@@ -16,6 +16,7 @@ from .. import effects as fx
 from .. import keyframes as kf
 from .. import transitions
 from ..i18n import _
+from ..safety import plain_tip
 from ..model import Clip
 from .timeline import MEDIA_MIME, timecode
 
@@ -55,7 +56,7 @@ class MediaBin(QListWidget):
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
-        self.itemDoubleClicked.connect(lambda it: self._add_at_playhead([it]))
+        self.itemDoubleClicked.connect(self._open_source)
         # Dışarıdan (Gezgin/Finder) bırakılan dosyalar: liste görünümü bu olayları kendi
         # içinde tükettiği için doğrudan görüntü alanında (viewport) yakalanır.
         self.viewport().setAcceptDrops(True)
@@ -71,7 +72,7 @@ class MediaBin(QListWidget):
                 tip += f"\n{m.width}×{m.height} · {m.codec} · {m.bit_depth}-bit"
                 if m.proxy:
                     tip += "\n" + _("Proxy") + ": " + m.proxy
-            it.setToolTip(tip)
+            it.setToolTip(plain_tip(tip))
             self.addItem(it)
 
     def label_for(self, m) -> str:
@@ -159,6 +160,11 @@ class MediaBin(QListWidget):
                        Qt.AlignCenter | Qt.TextWordWrap, _("Drop media here or use File → Import"))
             p.end()
 
+    def _open_source(self, it):
+        m = self.main.project.media.get(it.data(Qt.UserRole))
+        if m is not None:
+            self.main.open_in_source(m)
+
     def _add_at_playhead(self, items):
         t = self.main.timeline.playhead
         for it in items:
@@ -171,6 +177,7 @@ class MediaBin(QListWidget):
         items = self.selectedItems()
         menu = QMenu(self)
         if items:
+            menu.addAction(_("Open in Source Monitor"), lambda: self._open_source(items[0]))
             menu.addAction(_("Add to Timeline"), lambda: self._add_at_playhead(items))
             m0 = self.main.project.media.get(items[0].data(Qt.UserRole))
             vids = [self.main.project.media.get(i.data(Qt.UserRole)) for i in items]
@@ -347,7 +354,7 @@ class EffectBox(QGroupBox):
                 form.addRow(_(label), row)
             elif kind == "file":
                 btn = QPushButton(os.path.basename(val) if val else _("Choose .cube file…"))
-                btn.setToolTip(val or "")
+                btn.setToolTip(plain_tip(val))
                 btn.clicked.connect(lambda _c=False, k=key, b=btn: self._pick_file(k, b))
                 form.addRow(_(label), btn)
         if effect["type"] == "color_match":
@@ -357,6 +364,7 @@ class EffectBox(QGroupBox):
         p = self.effect["params"]
         name = p.get("ref_name")
         info = QLabel(_("Reference") + ": " + (name or _("none yet")))
+        info.setTextFormat(Qt.PlainText)
         info.setWordWrap(True)
         info.setStyleSheet("color:#9ec1ff;" if name else "color:#e0a050;")
         form.addRow(info)
@@ -409,7 +417,7 @@ class EffectBox(QGroupBox):
         m.before_edit()
         self.effect["params"][key] = path
         btn.setText(os.path.basename(path))
-        btn.setToolTip(path)
+        btn.setToolTip(plain_tip(path))
         # Sonraki renk eşleştirme, LUT'lu görüntüye göre yeniden ölçülsün
         m.reanalyze_color_match(self.clip, push=False, quiet=True)
         m.on_edited(refresh_inspector=False)
@@ -488,6 +496,7 @@ class Inspector(QScrollArea):
         self.lay.setSizeConstraint(QLayout.SetMinimumSize)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.title = QLabel(_("No clip selected"))
+        self.title.setTextFormat(Qt.PlainText)  # klip adı dosyadan gelir: HTML yorumlanmasın
         self.title.setStyleSheet("font-weight:bold; font-size:13px; padding:4px;")
         self.title.setWordWrap(True)
         self.lay.addWidget(self.title)

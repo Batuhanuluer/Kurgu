@@ -60,6 +60,8 @@ def pyinstaller():
         "--collect-submodules", "av",
         "--collect-binaries", "av",
         "--hidden-import", "kurgu.ui.main_window",
+        # Güncelleme imzası doğrulaması (updater içinde tembel içe aktarılıyor)
+        "--hidden-import", "cryptography.hazmat.primitives.asymmetric.ed25519",
         # Kullanılmayan büyük Qt modülleri (boyutu küçültür)
         "--exclude-module", "PySide6.QtWebEngineCore",
         "--exclude-module", "PySide6.QtWebEngineWidgets",
