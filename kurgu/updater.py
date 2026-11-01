@@ -28,7 +28,7 @@ SUMS_NAME = "SHA256SUMS.txt"
 SIG_NAME = "SHA256SUMS.txt.sig"
 # Ed25519 açık anahtar(lar)ı, base64 (32 bayt). packaging/make_signing_key.py üretir.
 # Boşsa kendini güncelleme kapalıdır (kullanıcı indirme sayfasına yönlendirilir).
-PUBLIC_KEYS: tuple[str, ...] = ()
+PUBLIC_KEYS: tuple[str, ...] = ("K3iXrXybp/qLAA65jrQ7+S9NZfcONOOFkgmMcEloSnc=",)
 # Kurulum dosyası yalnızca bu adreslerden indirilir (HTTPS)
 ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com",
                  "release-assets.githubusercontent.com")
