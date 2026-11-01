@@ -361,6 +361,16 @@ class Project:
         d = max(min(clip.trans_in_dur, clip.duration), 1e-3)
         return None, clip.start, d
 
+    def is_through_edit(self, a: Clip | None, b: Clip | None) -> bool:
+        """a'nın bittiği yerde b aynı çekimin tam devamı mı? (jiletle kesilmiş, arası silinmemiş)
+
+        Böyle bir kesmede iki taraf aynı görüntüyü gösterir; silme/iris gibi geçişler görünmez.
+        """
+        if a is None or b is None or a.kind != "media" or a.media_id != b.media_id:
+            return False
+        return abs(a.out_point - b.in_point) < 1.0 / max(self.fps, 1.0) and \
+            abs(a.speed - b.speed) < 1e-6
+
     def trans_out_info(self, clip: Clip):
         """Klibin sonundaki tek taraflı geçiş: (pencere başı, süre) ya da None."""
         if not clip.trans_out:
@@ -386,6 +396,63 @@ class Project:
                     c.trans_out = ""
                 else:
                     c.trans_out, c.trans_out_dur = kind, duration
+
+    # ------------------------------------------------------------ boşluklar
+    def gap_at(self, track: int, t: float):
+        """İzde t anındaki boşluk: (başlangıç, bitiş) — yalnızca sağında klip varsa."""
+        eps = self.adj_tol
+        clips = self.clips_on_track(track)
+        if any(c.start - eps <= t < c.end + eps for c in clips):
+            return None
+        after = [c for c in clips if c.start >= t]
+        if not after:
+            return None
+        end = min(c.start for c in after)
+        start = max((c.end for c in clips if c.end <= t + eps), default=0.0)
+        return (start, end) if end - start > eps else None
+
+    def close_gap(self, track: int, start: float, end: float) -> bool:
+        """Boşluğu siler; sağdaki klipler sola kayar (Premiere: Ripple Delete).
+
+        Diğer izler de o aralıkta boşsa tüm izler birlikte kayar (senkron korunur).
+        Değilse yalnızca bu izdeki klipler ve onlara bağlı klipler kayar; bağlı
+        klipler başka bir klibin üzerine binecekse işlem yapılmaz ve False döner.
+        """
+        d = end - start
+        eps = self.adj_tol
+        if d <= eps:
+            return False
+        unlocked = [i for i, tr in enumerate(self.tracks) if not tr.locked]
+        if track not in unlocked:
+            return False
+        others_free = all(
+            not (c.start < end - eps and c.end > start + eps)
+            for c in self.clips if c.track != track and c.track in unlocked)
+        if others_free:
+            movers = [c for c in self.clips if c.track in unlocked and c.start >= end - eps]
+        else:
+            movers = []
+            for c in self.clips:
+                if c.track == track and c.start >= end - eps:
+                    for x in self.linked(c):
+                        if x not in movers:
+                            movers.append(x)
+            ids = {c.id for c in movers}
+            for c in movers:
+                if c.track == track:
+                    continue
+                if self.tracks[c.track].locked:
+                    return False
+                for o in self.clips:
+                    if o.track == c.track and o.id not in ids and \
+                            o.start < c.end - d - eps and o.end > c.start - d + eps:
+                        return False
+        for c in movers:
+            c.start = max(0.0, c.start - d)
+        for i, m in enumerate(self.markers):
+            if m >= end - eps and others_free:
+                self.markers[i] = m - d
+        return True
 
     def snap_points(self, exclude: Iterable[str] = ()) -> list[float]:
         ex = set(exclude)

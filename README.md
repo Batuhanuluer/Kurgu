@@ -76,6 +76,7 @@ kurgu                              # veya: python -m kurgu
 | V / C | Seçim aracı / jilet aracı |
 | Ctrl+K | Oynatma kafasında böl |
 | Delete / Shift+Delete | Sil / boşluğu kapatarak sil |
+| Boşluğa tıkla + Delete | İki klip arasındaki boşluğu sil, sonraki klipler sola kayar |
 | Ctrl+D | Varsayılan geçişi uygula (çapraz çözülme) |
 | Ctrl+C / Ctrl+X / Ctrl+V | Kopyala / kes / yapıştır |
 | Ctrl+Alt+V | Özellikleri yapıştır |

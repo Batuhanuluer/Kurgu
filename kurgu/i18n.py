@@ -87,6 +87,14 @@ TR = {
     "Effects can only be applied to video or image clips":
         "Efektler yalnızca video ve görsel kliplerine uygulanabilir",
     "Preview error": "Önizleme hatası",
+    "These two clips are a continuous shot cut with the razor, so both sides show the same picture at the cut. Wipes and irises replace the image with the same image and look like nothing happens (Premiere behaves the same).\n\nTo see the transition: delete a piece between the two clips (or use two different clips), then close the gap.":
+        "Bu iki klip, jiletle kesilmiş kesintisiz tek bir çekim; kesme noktasında iki taraf aynı "
+        "görüntüyü gösteriyor. Silme ve iris geçişleri görüntüyü yine aynı görüntüyle değiştirdiği "
+        "için hiçbir şey olmuyormuş gibi görünür (Premiere'de de böyledir).\n\nGeçişi görmek için: "
+        "iki klibin arasından bir parça silin (ya da iki farklı klip kullanın), sonra boşluğu kapatın.",
+    "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
+    "Can't close the gap: linked clips on another track would overlap":
+        "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",
     "no adjacent clip on this side, so the transition goes to/from black. Close the gap to blend two clips.":
         "bu tarafta bitişik klip yok, geçiş siyaha/siyahtan yapılacak. İki klibi karıştırmak "
         "için aradaki boşluğu kapatın.",

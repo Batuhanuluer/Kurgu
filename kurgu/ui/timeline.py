@@ -60,6 +60,7 @@ class TimelineWidget(QWidget):
         self._drag = None
         self._drop_preview = None
         self._fx_target = None
+        self.sel_gap = None  # seçili boşluk: (iz, başlangıç, bitiş)
         self.sel_trans = None  # seçili geçiş: (klip kimliği, "in" | "out")
         self.waves: dict[str, object] = {}
         self._wave_sig = _WaveSignal()
@@ -179,7 +180,6 @@ class TimelineWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, False)
         w, h = self.width(), self.height()
-        pal = self.palette()
         p.fillRect(0, 0, w, h, QColor("#1b1d21"))
         proj = self.project
         # İz arka planları
@@ -196,6 +196,16 @@ class TimelineWidget(QWidget):
             self.paint_clip(p, c)
         for c in proj.clips:
             self.paint_transitions(p, c)
+        if self.sel_gap is not None:
+            gt, g0, g1 = self.sel_gap
+            gy = self.row_y(gt)
+            gr = QRectF(self.x_of(g0), gy + 2, (g1 - g0) * self.pps, TRACK_H - 4)
+            p.setPen(QPen(QColor("#ffcc33"), 1, Qt.DashLine))
+            p.setBrush(QColor(255, 204, 51, 55))
+            p.drawRect(gr)
+            if gr.width() > 60:
+                p.setPen(QColor("#ffe08a"))
+                p.drawText(gr, Qt.AlignCenter, _("Gap") + "  ⌫")
         if self._fx_target is not None:
             p.setPen(QPen(QColor("#ffcc33"), 2))
             p.setBrush(Qt.NoBrush)
@@ -222,7 +232,6 @@ class TimelineWidget(QWidget):
             p.drawPolygon(QPolygonF([QPointF(x - 6, RULER_H - 14), QPointF(x + 6, RULER_H - 14),
                                      QPointF(x + 6, RULER_H - 6), QPointF(x, RULER_H),
                                      QPointF(x - 6, RULER_H - 6)]))
-        _ = pal
         p.end()
 
     def paint_ruler(self, p: QPainter, w: int):
@@ -457,10 +466,16 @@ class TimelineWidget(QWidget):
             self.sel_trans = None
             self.selection_changed.emit()
         clip = self.clip_at(pos)
+        self.sel_gap = None
         if clip is None:
             if not ev.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
                 self.selected.clear()
                 self.selection_changed.emit()
+            ti = self.track_at(pos.y())
+            if ti is not None:
+                gap = self.project.gap_at(ti, self.t_of(pos.x()))
+                if gap is not None:
+                    self.sel_gap = (ti, gap[0], gap[1])
             self._drag = {"mode": "scrub"}
             self.set_playhead(self.frame_snap(self.t_of(pos.x())))
             return
@@ -535,7 +550,6 @@ class TimelineWidget(QWidget):
                     c.trans_in_dur = dur
                 elif d["edge"] == "out" and c.trans_out:
                     c.trans_out_dur = dur
-            _ = kind
             self.edited.emit()
             self.update()
             return
@@ -667,6 +681,13 @@ class TimelineWidget(QWidget):
             menu.addAction(_("Delete"), self.main.delete_selected)
             menu.addAction(_("Ripple Delete"), lambda: self.main.delete_selected(ripple=True))
         else:
+            ti = self.track_at(pos.y())
+            gap = self.project.gap_at(ti, self.t_of(pos.x())) if ti is not None else None
+            if gap is not None:
+                self.sel_gap = (ti, gap[0], gap[1])
+                self.update()
+                menu.addAction(_("Ripple Delete Gap"), self.main.delete_selected)
+                menu.addSeparator()
             menu.addAction(_("Add Title"), self.main.add_title)
             menu.addAction(_("Add Marker"), self.main.add_marker)
         menu.exec(QCursor.pos())

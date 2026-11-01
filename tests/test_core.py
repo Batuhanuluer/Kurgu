@@ -103,3 +103,41 @@ def test_export(qapp, tmp_path, red_video):
         assert c.streams.video and c.streams.audio
         frames = sum(1 for _ in c.decode(video=0))
         assert abs(frames - 50) <= 2
+
+
+def test_close_gap_moves_linked_audio(red_video, blue_video):
+    p = Project()
+    a = p.place_media(p.add_media(probe(red_video)), 0.0)
+    b = p.place_media(p.add_media(probe(blue_video)), a[0].end + 1.5)
+    vt = a[0].track
+    gap = p.gap_at(vt, a[0].end + 0.5)
+    assert gap is not None and abs(gap[1] - gap[0] - 1.5) < 1e-6
+    assert p.gap_at(vt, 0.5) is None  # klibin içi boşluk değil
+    assert p.close_gap(vt, *gap)
+    assert all(abs(c.start - a[0].end) < 1e-6 for c in b)  # görüntü + ses yapıştı
+    assert p.prev_adjacent(b[0]) is a[0]
+
+
+def test_close_gap_only_track_when_others_busy(red_video, blue_video):
+    p = Project()
+    a = p.place_media(p.add_media(probe(red_video)), 0.0)[0]
+    b = p.place_media(p.add_media(probe(red_video)), a.end + 1.0)[0]
+    v2 = p.track_indices("video")[1]
+    a2 = p.track_indices("audio")[1]
+    # V2'deki klip 1.5–3.5 arasında: boşluğun (2–3) üstünü kapatıyor
+    long_clip = p.place_media(p.add_media(probe(blue_video)), 1.5, video_track=v2,
+                              audio_track=a2)[0]
+    start0 = long_clip.start
+    assert p.close_gap(a.track, a.end, b.start)
+    assert abs(b.start - a.end) < 1e-6 and long_clip.start == start0
+    assert all(abs(c.start - a.end) < 1e-6 for c in p.linked(b))  # sesi de kaydı
+
+
+def test_through_edit_detection(red_video, blue_video):
+    p = Project()
+    a = p.place_media(p.add_media(probe(red_video)), 0.0)[0]
+    p.split_at(1.0, [a.id])
+    b = [c for c in p.clips if c.start == 1.0 and p.track_is_video(c.track)][0]
+    assert p.is_through_edit(a, b)
+    b.in_point += 0.5  # aradan parça silinmiş gibi
+    assert not p.is_through_edit(a, b)

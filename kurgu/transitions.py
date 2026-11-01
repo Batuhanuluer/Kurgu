@@ -120,19 +120,31 @@ def draw(painter: QPainter, kind: str, a: QImage | None, b: QImage | None, p: fl
         path.moveTo(c)
         path.arcTo(QRectF(c.x() - big, c.y() - big, 2 * big, 2 * big), 90, -360 * p)
         path.closeSubpath()
-    if b is None:
-        if a is None:
-            return
-        full = QPainterPath()
-        full.addRect(QRectF(0, 0, w, h))
-        painter.save()
-        painter.setClipPath(full.subtracted(path), Qt.IntersectClip)
-        painter.drawImage(0, 0, a)
-        painter.restore()
-        return
-    if a is not None:
-        painter.drawImage(0, 0, a)
-    painter.save()
-    painter.setClipPath(path, Qt.IntersectClip)
-    painter.drawImage(0, 0, b)
-    painter.restore()
+    # Kırpma yolu (setClipPath) yerine piksel maskesi: her platformda ve her
+    # QPainter durumunda aynı sonucu verir, kenarlar da yumuşak (antialias) olur.
+    if b is not None:
+        if a is not None:
+            painter.drawImage(0, 0, a)
+        painter.drawImage(0, 0, _masked(b, path, keep_inside=True))
+    elif a is not None:
+        painter.drawImage(0, 0, _masked(a, path, keep_inside=False))
+
+
+def _masked(img: QImage, path: QPainterPath, keep_inside: bool) -> QImage:
+    """img'nin bir kopyasında yalnızca yolun içini (ya da dışını) bırakır."""
+    out = img.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+    if out is img or out.cacheKey() == img.cacheKey():
+        out = out.copy()
+    # Tam tuval maske görüntüsü: DestinationIn/Out tüm pikselleri etkilesin
+    mask = QImage(out.width(), out.height(), QImage.Format_ARGB32_Premultiplied)
+    mask.fill(Qt.transparent)
+    mp = QPainter(mask)
+    mp.setRenderHint(QPainter.Antialiasing, True)
+    mp.fillPath(path, QColor(0, 0, 0, 255))
+    mp.end()
+    q = QPainter(out)
+    q.setCompositionMode(QPainter.CompositionMode_DestinationIn if keep_inside
+                         else QPainter.CompositionMode_DestinationOut)
+    q.drawImage(0, 0, mask)
+    q.end()
+    return out

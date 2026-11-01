@@ -446,6 +446,18 @@ class MainWindow(QMainWindow):
         self.on_edited()
 
     def delete_selected(self, ripple=False):
+        gap = self.timeline.sel_gap
+        if gap is not None and not self.timeline.selected:
+            self.timeline.sel_gap = None
+            self.before_edit()
+            if self.project.close_gap(*gap):
+                self.statusBar().showMessage(_("Gap closed"), 3000)
+            else:
+                self.history.undo_stack.pop()
+                self.statusBar().showMessage(
+                    _("Can't close the gap: linked clips on another track would overlap"), 6000)
+            self.on_edited()
+            return
         st = self.timeline.sel_trans
         if st is not None:
             clip = self.project.clip_by_id(st[0])
@@ -518,15 +530,24 @@ class MainWindow(QMainWindow):
             return
         elif kind == "transition":
             done = set()
-            lonely = False
+            lonely = through = False
             for c in targets:
                 if c.id not in done:
                     neighbour = p.prev_adjacent(c) if edge == "in" else p.next_adjacent(c)
                     lonely |= neighbour is None
+                    pair = (neighbour, c) if edge == "in" else (c, neighbour)
+                    through |= p.is_through_edit(*pair)
                     p.apply_transition(c, edge, ident, 1.0)
                     done.update(x.id for x in p.linked(c))
             name = _(transitions.NAMES.get(ident, ident))
-            if lonely:
+            if through:
+                QMessageBox.information(self, name, _(
+                    "These two clips are a continuous shot cut with the razor, so both sides "
+                    "show the same picture at the cut. Wipes and irises replace the image with "
+                    "the same image and look like nothing happens (Premiere behaves the same).\n\n"
+                    "To see the transition: delete a piece between the two clips (or use two "
+                    "different clips), then close the gap."))
+            elif lonely:
                 self.statusBar().showMessage(
                     name + ": " + _("no adjacent clip on this side, so the transition goes "
                                     "to/from black. Close the gap to blend two clips."), 8000)
