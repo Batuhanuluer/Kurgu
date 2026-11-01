@@ -1,2 +1,2 @@
 """Kurgu — özgür ve açık kaynak video düzenleyici."""
-__version__ = "0.7.1"
+__version__ = "0.7.2"

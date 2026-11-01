@@ -175,6 +175,10 @@ TR = {
     "Project set to {w}×{h} @ {fps} fps": "Proje {w}×{h}, {fps} kare/sn olarak ayarlandı",
     "Scale to Fill Frame": "Kareyi Doldur (boşluksuz)", "Scale to Fit Frame": "Kareye Sığdır",
     "Match Project to This Clip": "Projeyi Bu Klibe Uydur",
+    "fine (no magnet)": "hassas (mıknatıs yok)", "Alt: fine": "Alt: hassas",
+    "Moved {n} frame(s)": "{n} kare kaydırıldı", "Nudge clip 1 frame": "Klibi 1 kare kaydır",
+    "Nudge clip 5 frames": "Klibi 5 kare kaydır", "Alt while dragging": "Sürüklerken Alt",
+    "Fine move (no magnet)": "Hassas taşıma (mıknatıs yok)",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

@@ -343,6 +343,10 @@ class MainWindow(QMainWindow):
         self._act(None, "home", self.go_start, "Home")
         self._act(None, "end", self.go_end, "End")
         self._act(None, "up", lambda: self.jump_edit(-1), "Up")
+        self._act(None, "nudge-1", lambda: self.nudge_selected(-1), "Alt+Left")
+        self._act(None, "nudge+1", lambda: self.nudge_selected(1), "Alt+Right")
+        self._act(None, "nudge-5", lambda: self.nudge_selected(-5), "Alt+Shift+Left")
+        self._act(None, "nudge+5", lambda: self.nudge_selected(5), "Alt+Shift+Right")
         self._act(None, "down", lambda: self.jump_edit(1), "Down")
         for a in self.actions():
             a.setShortcutContext(Qt.WindowShortcut)
@@ -548,6 +552,29 @@ class MainWindow(QMainWindow):
         self.before_edit()
         self._match_sequence_to(m)
         self.on_edited()
+
+    def nudge_selected(self, frames: int):
+        """Premiere: Alt+←/→ seçili klipleri 1 kare, Alt+Shift ile 5 kare kaydırır."""
+        sel = self.selected_clips()
+        if not sel:
+            return
+        p = self.project
+        d = frames / p.fps
+        if min(c.start for c in sel) + d < -1e-9:
+            d = -min(c.start for c in sel)
+        if abs(d) < 1e-9:
+            return
+        self.before_edit()
+        ids = {c.id for c in sel}
+        for c in sel:
+            c.start = round((c.start + d) * p.fps) / p.fps
+        for c in sel:  # Premiere gibi: altında kalanın üzerine yazar
+            p._clear_space(c.track, c.start, c.end, ignore=ids)
+        self.on_edited()
+        from .timeline import timecode
+        self.statusBar().showMessage(
+            _("Moved {n} frame(s)").format(n=f"{frames:+d}") + "  →  "
+            + timecode(min(c.start for c in sel), p.fps), 2500)
 
     def scale_clip(self, clip, mode: str):
         """'fill': boşluk kalmadan kareyi doldur (kenarlar kırpılır), 'fit': tamamı görünsün."""
@@ -1525,7 +1552,9 @@ class MainWindow(QMainWindow):
             ("Shift+Delete", _("Ripple Delete")), ("Ctrl+D", _("Apply Default Transition")),
             ("Ctrl+C / Ctrl+V", _("Copy") + " / " + _("Paste")),
             ("Ctrl+Alt+V", _("Paste Attributes")), ("Ctrl+Shift+K / Shift+K", _("Previous / next keyframe")),
-            ("Enter", _("Render Effects")), ("Ctrl+Shift+D", _("Duplicate")),
+            ("Enter", _("Render Effects")),
+            ("Alt+← / Alt+→", _("Nudge clip 1 frame")), ("Alt+Shift+← / →", _("Nudge clip 5 frames")),
+            (_("Alt while dragging"), _("Fine move (no magnet)")), ("Ctrl+Shift+D", _("Duplicate")),
             ("Ctrl+T", _("Add Title")), ("M", _("Add Marker")),
             ("+ / - / \\", _("Zoom In") + " / " + _("Zoom Out") + " / " + _("Zoom to Fit")),
             ("Ctrl+Z / Ctrl+Shift+Z", _("Undo") + " / " + _("Redo")),

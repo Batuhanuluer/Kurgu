@@ -20,6 +20,7 @@ TRACK_H = 58
 GROUP_GAP = 8
 EDGE_PX = 7
 SNAP_PX = 9
+MAGNET_PX = 18  # komşunun üzerine bu kadar binerse kenarına dayan (üzerine yazma)
 
 COLORS = {
     "video": QColor("#3d6fb6"), "image": QColor("#2f8f86"), "audio": QColor("#3f8a4e"),
@@ -140,6 +141,50 @@ class TimelineWidget(QWidget):
         self.snap_hit = best
         return best
 
+    def magnet_move(self, clip: Clip, t: float, excl, drag: dict | None = None,
+                    fine: bool = False) -> float:
+        """Taşınan klibin yeni başlangıcı: kenarlara yapışma + çarpışma mıknatısı.
+
+        1) Başı ya da sonu yakındaki bir kenara (klip, işaretçi, oynatma kafası) yapışır.
+        2) Hedef izdeki bir komşunun üzerine *biraz* bindiyse (MAGNET_PX'ten az) üzerine yazmak
+           yerine onun kenarına dayanır. Daha derin bırakılırsa Premiere gibi üzerine yazar.
+        """
+        dur = clip.duration
+        if not self.snapping or fine:  # Alt/Ctrl basılı: hassas mod, mıknatıs yok
+            self.snap_hit = None
+            return max(self.frame_snap(t), 0.0)
+        s0 = self.snap(t, excl, radius_px=SNAP_PX * 1.3)
+        h0 = self.snap_hit
+        s1 = self.snap(t + dur, excl, radius_px=SNAP_PX * 1.3) - dur
+        h1 = self.snap_hit
+        if h0 is not None and (h1 is None or abs(s0 - t) <= abs(s1 - t)):
+            t, hit = s0, h0
+        elif h1 is not None:
+            t, hit = s1, h1
+        else:
+            t, hit = self.frame_snap(t), None
+        limit = MAGNET_PX / self.pps
+        for o in self.project.clips:
+            if o.track != clip.track or o.id in excl:
+                continue
+            # Komşunun üzerine binme derinliği. Mıknatıs "yumuşak" çalışır: derinlik payın
+            # altındaysa kenara dayanır; payı aşınca klip kenardan başlayarak kesintisiz
+            # içeri girer (sıçrama olmaz, geri çekince de akıcı biçimde kenara oturur).
+            if o.start < t < o.end:  # soldaki komşunun üzerine bindi
+                depth = o.end - t
+                t = o.end if depth <= limit else o.end - (depth - limit)
+                hit = o.end if depth <= limit else None
+            elif o.start < t + dur < o.end:  # sağdakinin üzerine bindi
+                depth = t + dur - o.start
+                t = o.start - dur if depth <= limit else o.start - dur + (depth - limit)
+                hit = o.start if depth <= limit else None
+            else:
+                continue
+            t = self.frame_snap(t) if hit is None else t
+            break
+        self.snap_hit = hit
+        return max(t, 0.0)
+
     def razor_time(self, pos: QPointF, clip: Clip) -> float:
         """Jilet: kendi kenarları hariç diğer izlerdeki kenarlara yapışarak kesme zamanı."""
         own = {c.id for c in self.project.linked(clip)}
@@ -242,6 +287,29 @@ class TimelineWidget(QWidget):
             self.paint_header(p, ti, y)
         # Cetvel
         self.paint_ruler(p, w)
+        # Sürükleme göstergesi: ne kadar kaydırıldı (hassas ayar için)
+        d = self._drag
+        if d and d.get("mode") == "move" and d.get("pushed"):
+            mc = self.project.clip_by_id(d["clip"])
+            if mc is not None:
+                delta = mc.start - d["start0"]
+                sign = "+" if delta >= 0 else "−"
+                txt = f"{sign}{timecode(abs(delta), self.project.fps)}"
+                txt += "   " + (_("fine (no magnet)") if d.get("fine") else _("Alt: fine"))
+                r = self.clip_rect(mc)
+                f = QFont(self.font())
+                f.setBold(True)
+                p.setFont(f)
+                tw = p.fontMetrics().horizontalAdvance(txt) + 14
+                box = QRectF(max(HEADER_W + 2, r.left()), r.top() - 22, tw, 19)
+                if box.top() < RULER_H:
+                    box.moveTop(r.bottom() + 3)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(20, 20, 24, 225))
+                p.drawRoundedRect(box, 4, 4)
+                p.setPen(QColor("#ffcc33") if not d.get("fine") else QColor("#7fd18b"))
+                p.drawText(box, Qt.AlignCenter, txt)
+                p.setFont(self.font())
         # Jilet önizlemesi ve yapışma kılavuzu
         if self.tool == "razor" and self.razor_hover is not None:
             rt, rtrack = self.razor_hover
@@ -674,10 +742,17 @@ class TimelineWidget(QWidget):
                                else self.project.linked(clip))}
         if d["mode"] == "move":
             self._begin_drag_edit()
+            # Önce hedef iz (çarpışma mıknatısı o izdeki komşulara bakar)
+            ti = self.track_at(pos.y())
+            if ti is not None and ti != clip.track and \
+                    self.project.tracks[ti].kind == self.project.tracks[clip.track].kind \
+                    and not self.project.tracks[ti].locked:
+                d["target_track"] = ti
+                clip.track = ti
             t = self.t_of(pos.x()) - d["grab"]
-            s_start = self.snap(t, excl)
-            s_end = self.snap(t + clip.duration, excl) - clip.duration
-            t = s_start if abs(s_start - t) <= abs(s_end - t) else s_end
+            fine = bool(ev.modifiers() & (Qt.AltModifier | Qt.ControlModifier))
+            t = self.magnet_move(clip, t, excl, d, fine)
+            d["fine"] = fine
             # Önizleme için yalnızca konumu değiştir; üzerine yazma bırakınca yapılır.
             delta = max(t, 0) - clip.start
             group = self.drag_group(clip)
@@ -685,15 +760,9 @@ class TimelineWidget(QWidget):
                 delta = -min(c.start for c in group)
             for c in group:
                 c.start += delta
-            ti = self.track_at(pos.y())
-            if ti is not None and ti != clip.track and \
-                    self.project.tracks[ti].kind == self.project.tracks[clip.track].kind \
-                    and not self.project.tracks[ti].locked:
-                d["target_track"] = ti
-                clip.track = ti
         elif d["mode"] in ("trim_in", "trim_out"):
             self._begin_drag_edit()
-            t = self.snap(self.t_of(pos.x()), excl)
+            t = self.snap(self.t_of(pos.x()), excl, radius_px=SNAP_PX * 1.7)
             self.project.trim(clip, "in" if d["mode"] == "trim_in" else "out", t)
             self.edited.emit()
         self.update()

@@ -59,7 +59,7 @@ projeler korunur. Diğer sistemlerde indirme sayfası açılır. Yardım menüs�
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
-git tag v0.7.1
+git tag v0.7.2
 git push --tags
 ```
 
@@ -104,6 +104,12 @@ Releases sayfasına yükler (`.github/workflows/release.yml`).
     tam çözünürlükte netleşir
   - Bir klibi düzenleyince yalnızca o klibin göründüğü kareler yeniden hesaplanır
   - Önbellek varsayılan 1 GB bellek kullanır (`KURGU_CACHE_MB` ile değiştirilebilir)
+- **Mıknatıs ve hassas taşıma:** klipler taşınırken ve kırpılırken komşu kenarlara yapışır
+  (sarı kılavuz çizgi). Komşunun üzerine *biraz* kaydırırsan kenarına dayanır; daha da
+  bastırırsan klip kenardan sıçramadan, akıcı biçimde içeri girer (bilerek bindirmek için).
+  Sürüklerken **Alt** (ya da Ctrl) basılı tut: mıknatıs kapanır, kare kare hassas taşırsın.
+  **Alt+←/→** seçili klibi 1 kare, **Alt+Shift+←/→** 5 kare kaydırır. Sürüklerken klibin
+  üstünde ne kadar kaydırdığın görünür (ör. +00:00:00:05). S tuşu mıknatısı açar/kapatır
 - **Mıknatıslı jilet:** jilet aracı başka izdeki kenarlara yaklaşınca yapışır, sarı kılavuz
   çizgi hizayı gösterir
 - **Program monitöründe doğrudan düzenleme:** seçili klibi fareyle sürükleyerek taşı,
@@ -162,6 +168,8 @@ Releases sayfasına yükler (`.github/workflows/release.yml`).
 | Ctrl+Alt+V | Özellikleri yapıştır |
 | Ctrl+Shift+D | Çoğalt |
 | Shift+K / Ctrl+Shift+K | Sonraki / önceki anahtar kare |
+| Alt+← / Alt+→ | Seçili klibi 1 kare kaydır (Shift ile 5 kare) |
+| Sürüklerken Alt | Hassas taşıma (mıknatıs yok) |
 | Enter | Efektli bölümleri render et |
 | Ctrl+T | Başlık ekle |
 | M | İşaretçi ekle |
