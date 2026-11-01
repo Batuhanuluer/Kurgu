@@ -19,6 +19,25 @@ from ..model import Clip
 from .timeline import MEDIA_MIME, timecode
 
 
+MEDIA_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts", ".m2ts", ".mpg", ".mpeg",
+             ".wmv", ".flv", ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".png",
+             ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
+
+
+def _expand_dirs(paths):
+    """Bırakılan klasörlerin içindeki medya dosyalarını da al."""
+    import os
+    out = []
+    for p in paths:
+        if os.path.isdir(p):
+            for base, _d, files in os.walk(p):
+                out += [os.path.join(base, f) for f in sorted(files)
+                        if os.path.splitext(f)[1].lower() in MEDIA_EXT]
+        else:
+            out.append(p)
+    return out
+
+
 class MediaBin(QListWidget):
     def __init__(self, main):
         super().__init__()
@@ -36,6 +55,10 @@ class MediaBin(QListWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
         self.itemDoubleClicked.connect(lambda it: self._add_at_playhead([it]))
+        # Dışarıdan (Gezgin/Finder) bırakılan dosyalar: liste görünümü bu olayları kendi
+        # içinde tükettiği için doğrudan görüntü alanında (viewport) yakalanır.
+        self.viewport().setAcceptDrops(True)
+        self.viewport().installEventFilter(self)
 
     def rebuild(self):
         self.clear()
@@ -63,6 +86,20 @@ class MediaBin(QListWidget):
         p.end()
         return QIcon(pm)
 
+    def eventFilter(self, obj, ev):
+        from PySide6.QtCore import QEvent
+        if obj is self.viewport() and ev.type() in (QEvent.DragEnter, QEvent.DragMove,
+                                                     QEvent.Drop):
+            md = ev.mimeData()
+            if md.hasUrls() and not md.hasFormat(MEDIA_MIME):
+                ev.setDropAction(Qt.CopyAction)
+                ev.accept()
+                if ev.type() == QEvent.Drop:
+                    paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+                    self.main.import_paths(_expand_dirs(paths))
+                return True
+        return super().eventFilter(obj, ev)
+
     def mimeData(self, items):
         md = QMimeData()
         if items:
@@ -86,8 +123,8 @@ class MediaBin(QListWidget):
 
     def dropEvent(self, ev):
         if ev.mimeData().hasUrls():
-            self.main.import_paths([u.toLocalFile() for u in ev.mimeData().urls()
-                                    if u.isLocalFile()])
+            self.main.import_paths(_expand_dirs([u.toLocalFile() for u in ev.mimeData().urls()
+                                                 if u.isLocalFile()]))
             ev.acceptProposedAction()
 
     def paintEvent(self, ev):

@@ -48,6 +48,14 @@ kurgu                              # veya: python -m kurgu
   [Inno Setup](https://jrsoftware.org/isdl.php) kuruluysa `Kurgu-…-setup.exe` kurulum programı da üretilir.
 - **macOS / Linux:** `python packaging/build.py`
 
+### Güncellemeler
+
+Kurgu açılışta (günde en fazla bir kez) GitHub'daki son sürümü denetler; yenisi varsa
+durum çubuğunda **⬆ Yeni sürüm** düğmesi çıkar. Windows'ta kurulum programıyla kurduysanız
+**Şimdi Güncelle** yeni sürümü indirir, üzerine kurar ve Kurgu'yu yeniden açar; ayarlar ve
+projeler korunur. Diğer sistemlerde indirme sayfası açılır. Yardım menüsünden kapatılabilir
+(yalnızca herkese açık GitHub API'sine sürüm sorgusu yapılır).
+
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
@@ -162,6 +170,7 @@ kurgu/
   transitions.py  Video geçişleri
   rendercache.py  Render önbelleği, kare imzası, arka plan işçisi
   render.py       Katman birleştirme (QPainter), renk, ses miksajı, MP4 dışa aktarma
+  updater.py      Güncelleme denetimi ve Windows'ta kendini güncelleme
   autosave.py     Otomatik kaydetme, oturum kilidi, çökme kurtarma
   i18n.py         Çeviriler
   ui/

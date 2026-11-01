@@ -17,7 +17,7 @@ from ..media import probe, thumbnail
 from ..model import History, MediaItem, Project, new_id
 from ..render import export
 from .. import effects as fx
-from .. import autosave
+from .. import autosave, updater
 from .. import keyframes as kf
 from ..rendercache import FrameCache, FrameSig, RenderWorker, heavy_frames, heavy_intervals
 from .. import transitions
@@ -163,6 +163,7 @@ class MainWindow(QMainWindow):
         self.bin = MediaBin(self)
         self.inspector = Inspector(self)
         self.setCentralWidget(self.monitor)
+        self.setAcceptDrops(True)
         self.setDockNestingEnabled(True)
         self.effects_panel = EffectsPanel(self)
         bin_dock = self._dock(_("Project"), self.bin, Qt.LeftDockWidgetArea)
@@ -205,6 +206,12 @@ class MainWindow(QMainWindow):
         _app.EMERGENCY.append(self.emergency_save)
         if crashed:
             QTimer.singleShot(300, lambda: self.offer_recovery(crashed))
+        # Güncelleme denetimi (günde en fazla bir kez, arka planda)
+        self._update_btn = None
+        import time as _t
+        if self.settings.value("check_updates", True, type=bool) and \
+                _t.time() - float(self.settings.value("last_update_check", 0)) > 20 * 3600:
+            QTimer.singleShot(4000, lambda: self.check_updates(manual=False))
         self._update_title()
         self.statusBar().showMessage(_("Ready"))
         self.monitor.refresh(0.0)
@@ -306,6 +313,12 @@ class MainWindow(QMainWindow):
 
         h = mb.addMenu(_("Help"))
         self._act(h, _("Keyboard Shortcuts"), self.show_shortcuts, "F1")
+        h.addSeparator()
+        self._act(h, _("Check for Updates…"), lambda: self.check_updates(manual=True))
+        auto = self._act(h, _("Check for updates at startup"),
+                         lambda on: self.settings.setValue("check_updates", on), checkable=True)
+        auto.setChecked(self.settings.value("check_updates", True, type=bool))
+        h.addSeparator()
         self._act(h, _("About Kurgu"), self.about)
 
         # Menüde görünmeyen oynatma kısayolları
@@ -326,7 +339,11 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ durum
     def _update_title(self):
-        name = os.path.basename(self.project.path) if self.project.path else "Untitled"
+        app_name = f"Kurgu {__version__}"
+        if not self.project.path:
+            self.setWindowTitle(("• " if self.dirty else "") + app_name)
+            return
+        name = os.path.basename(self.project.path)
         if getattr(self.project, "recovered", False):
             name += " [" + _("recovered") + "]"
         self.setWindowTitle(f"{'• ' if self.dirty else ''}{name} — Kurgu {__version__}")
@@ -689,6 +706,110 @@ class MainWindow(QMainWindow):
             self.player.pause()
             self.timeline.set_playhead(target)
             self.timeline.ensure_visible(target)
+
+    # ------------------------------------------------------------ güncellemeler
+    def check_updates(self, manual=False):
+        import threading
+        import time as _t
+        from PySide6.QtCore import QObject, Signal as _Signal
+
+        class _B(QObject):
+            done = _Signal(object, str)
+        bridge = _B()
+        self._upd_bridge = bridge
+
+        def work():
+            try:
+                info = updater.fetch_latest()
+                bridge.done.emit(info, "")
+            except Exception as e:  # ağ yok vb.
+                bridge.done.emit(None, str(e))
+
+        def finished(info, err):
+            self.settings.setValue("last_update_check", _t.time())
+            if info and updater.is_newer(info["version"], __version__):
+                self._show_update_button(info)
+                if manual:
+                    self.show_update_dialog(info)
+            elif manual:
+                if err:
+                    QMessageBox.warning(self, _("Check for Updates…").rstrip("…"),
+                                        _("Could not reach GitHub:") + f"\n{err}")
+                else:
+                    QMessageBox.information(self, _("Check for Updates…").rstrip("…"),
+                                            _("You are using the latest version ({v}).")
+                                            .format(v=__version__))
+        bridge.done.connect(finished)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_update_button(self, info):
+        from PySide6.QtWidgets import QPushButton
+        if self._update_btn is None:
+            self._update_btn = QPushButton()
+            self._update_btn.setFlat(True)
+            self._update_btn.setStyleSheet("color:#7fd18b; font-weight:bold;")
+            self.statusBar().addPermanentWidget(self._update_btn)
+            self._update_btn.clicked.connect(lambda: self.show_update_dialog(self._update_info))
+        self._update_info = info
+        self._update_btn.setText("⬆ " + _("New version: {v}").format(v=info["version"]))
+
+    def show_update_dialog(self, info):
+        box = QMessageBox(self)
+        box.setWindowTitle(_("Update available"))
+        box.setText(_("Kurgu {new} is available (you have {old}).")
+                    .format(new=info["version"], old=__version__))
+        notes = info.get("notes", "").strip()
+        if notes:
+            box.setDetailedText(notes)
+        upd = box.addButton(_("Update Now"), QMessageBox.AcceptRole) \
+            if updater.can_self_update(info) else None
+        page = box.addButton(_("Download Page"), QMessageBox.ActionRole)
+        box.addButton(_("Later"), QMessageBox.RejectRole)
+        box.exec()
+        if upd is not None and box.clickedButton() is upd:
+            self.self_update(info)
+        elif box.clickedButton() is page:
+            QDesktopServices.openUrl(QUrl(info["url"]))
+
+    def self_update(self, info):
+        """Windows: kurulum programını indir, Kurgu'yu kapat, sessizce kur ve yeniden aç."""
+        if not self.maybe_save():
+            return
+        import threading
+        from PySide6.QtCore import QObject, Signal as _Signal
+
+        class _B(QObject):
+            prog = _Signal(int)
+            done = _Signal(str, str)
+        b = _B()
+        self._dl_bridge = b
+        dlg = QProgressDialog(_("Downloading update…"), _("Cancel"), 0, 1000, self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        state = {"cancel": False}
+        dlg.canceled.connect(lambda: state.__setitem__("cancel", True))
+        b.prog.connect(dlg.setValue)
+
+        def work():
+            try:
+                path = updater.download(info["setup_url"],
+                                        progress=lambda d, t: b.prog.emit(int(d * 1000 / t)),
+                                        cancelled=lambda: state["cancel"])
+                b.done.emit(path, "")
+            except Exception as e:
+                b.done.emit("", str(e))
+
+        def finished(path, err):
+            dlg.close()
+            if not path:
+                if not state["cancel"]:
+                    QMessageBox.warning(self, _("Update available"), err)
+                return
+            updater.run_installer(path)
+            self.dirty = False
+            self.close()
+        b.done.connect(finished)
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------ otomatik kaydetme
     def set_autosave_interval(self, minutes: int):
@@ -1182,6 +1303,27 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, _("About Kurgu"),
                           f"<h2>Kurgu {__version__}</h2><p>{_('Free, open-source video editor.')}"
                           "</p><p>Python · PySide6 (Qt) · PyAV (FFmpeg)</p><p>MIT License</p>")
+
+    # Pencerenin herhangi bir yerine bırakılan dosyalar içe aktarılır (zaman çizelgesi
+    # ve medya kutusu kendi bırakma davranışlarını kullanır).
+    def dragEnterEvent(self, ev):
+        if ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+
+    def dragMoveEvent(self, ev):
+        if ev.mimeData().hasUrls():
+            ev.acceptProposedAction()
+
+    def dropEvent(self, ev):
+        from .panels import _expand_dirs
+        paths = [u.toLocalFile() for u in ev.mimeData().urls() if u.isLocalFile()]
+        projects = [p for p in paths if p.lower().endswith(".kurgu")]
+        if projects:
+            if self.maybe_save():
+                self.open_project(projects[0])
+        else:
+            self.import_paths(_expand_dirs(paths))
+        ev.acceptProposedAction()
 
     def closeEvent(self, ev):
         if not self.maybe_save():

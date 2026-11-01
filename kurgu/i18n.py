@@ -128,6 +128,14 @@ TR = {
     "recovered": "kurtarıldı",
     "Recovered project opened. Save it (Ctrl+S) to keep the changes.":
         "Kurtarılan proje açıldı. Değişiklikleri korumak için kaydedin (Ctrl+S).",
+    "Check for Updates…": "Güncellemeleri Denetle…",
+    "Check for updates at startup": "Açılışta güncellemeleri denetle",
+    "Could not reach GitHub:": "GitHub'a ulaşılamadı:",
+    "You are using the latest version ({v}).": "En son sürümü kullanıyorsunuz ({v}).",
+    "New version: {v}": "Yeni sürüm: {v}", "Update available": "Güncelleme var",
+    "Kurgu {new} is available (you have {old}).": "Kurgu {new} yayınlandı (sizdeki: {old}).",
+    "Update Now": "Şimdi Güncelle", "Download Page": "İndirme Sayfası", "Later": "Sonra",
+    "Downloading update…": "Güncelleme indiriliyor…",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

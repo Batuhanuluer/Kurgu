@@ -49,3 +49,5 @@ Root: HKA; Subkey: "Software\Classes\KurguProject\shell\open\command"; ValueType
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+; Uygulama içinden sessiz güncellemeden sonra Kurgu'yu yeniden aç
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent
