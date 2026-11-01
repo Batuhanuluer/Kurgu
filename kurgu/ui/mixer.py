@@ -251,7 +251,7 @@ class AudioFxPanel(QGroupBox):
         norm = QPushButton("📢 " + _("Normalize Loudness…"))
         norm.setToolTip(_("Match the loudness of the selected clips to a target "
                           "(YouTube -14 LUFS, podcast -16 LUFS…)"))
-        norm.clicked.connect(self.main.normalize_dialog)
+        norm.clicked.connect(lambda: self.main.normalize_dialog())
         lay.addWidget(norm)
 
     def set_clip(self, clip):

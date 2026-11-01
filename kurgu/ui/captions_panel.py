@@ -22,7 +22,7 @@ class CaptionsPanel(QWidget):
         lay.setContentsMargins(6, 6, 6, 6)
         gen = QPushButton("🎙 " + _("Transcribe Speech to Captions…"))
         gen.setToolTip(_("Automatic captions with Whisper speech recognition"))
-        gen.clicked.connect(main.transcribe_dialog)
+        gen.clicked.connect(lambda: main.transcribe_dialog())
         lay.addWidget(gen)
         row = QHBoxLayout()
         for text, tip, slot in ((_("Add"), _("Add a caption at the playhead"), main.add_caption),

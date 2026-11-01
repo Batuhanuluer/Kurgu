@@ -406,7 +406,10 @@ class MainWindow(QMainWindow):
             a.setShortcuts([QKeySequence(s) for s in (shortcut if isinstance(shortcut, list)
                                                        else [shortcut])])
         a.setCheckable(checkable)
-        a.triggered.connect(slot)
+        if checkable:
+            a.triggered.connect(slot)
+        else:  # Qt "checked" (False) değerini isteğe bağlı ilk parametreye göndermesin
+            a.triggered.connect(lambda _checked=False, f=slot: f())
         if menu is not None:
             menu.addAction(a)
         else:

@@ -158,3 +158,32 @@ w.dirty = False; w.close(); print('OK')
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
                        timeout=180)
     assert "OK" in r.stdout, r.stdout[-2000:] + r.stderr[-3000:]
+
+
+def test_buttons_do_not_pass_checked_flag(tmp_path):
+    """Düğme/menü tıklaması Qt'nin 'checked=False' değerini isteğe bağlı parametreye
+    (engine, target) geçirmemeli: 'bool' object has no attribute 'transcribe' hatası."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = f"""
+import sys; sys.path.insert(0, {root!r})
+from PySide6.QtWidgets import QApplication, QPushButton; app = QApplication([])
+import kurgu.ui.player as pl; pl.HAVE_AUDIO = False
+from kurgu.ui.main_window import MainWindow
+calls = []
+MainWindow.transcribe_dialog = lambda self, *a, **k: calls.append(('t', a, k))
+MainWindow.normalize_dialog = lambda self, *a, **k: calls.append(('n', a, k))
+w = MainWindow(None); w.show(); app.processEvents()
+btn = [b for b in w.captions_panel.findChildren(QPushButton) if '🎙' in b.text()][0]
+btn.click()
+nb = [b for b in w.inspector.afx_panel.findChildren(QPushButton) if '📢' in b.text()][0]
+nb.click()
+act = [a for a in w.findChildren(type(w.menuBar().actions()[0])) if a.text().startswith(('Normalize', 'Ses Yüksekliğini'))][0]
+act.trigger()
+assert calls == [('t', (), {{}}), ('n', (), {{}}), ('n', (), {{}})], calls
+w.dirty = False; w.close(); print('OK')
+"""
+    env = dict(os.environ, HOME=str(tmp_path), QT_QPA_PLATFORM="offscreen",
+               USERPROFILE=str(tmp_path))
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                       timeout=180)
+    assert "OK" in r.stdout, r.stdout[-2000:] + r.stderr[-3000:]

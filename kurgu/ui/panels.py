@@ -650,7 +650,7 @@ class Inspector(QScrollArea):
         hint.setStyleSheet("color:#80868b;")
         tsf.addRow(hint)
         del_btn = QPushButton(_("Delete Transition"))
-        del_btn.clicked.connect(self.main.delete_selected)
+        del_btn.clicked.connect(lambda: self.main.delete_selected())
         tsf.addRow(del_btn)
         self.lay.insertWidget(1, self.tsel_group)
         self.tsel_group.setVisible(False)
