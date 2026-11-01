@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kurgu"
-version = "0.5.1"
+version = "0.5.2"
 description = "Free, open-source, cross-platform video editor written in Python"
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,3 +29,8 @@ include = ["kurgu*"]
 
 [tool.setuptools.package-data]
 kurgu = ["resources/*"]
+
+[tool.pytest.ini_options]
+# Testler paket kurulmadan da (doğrudan `pytest` ile) çalışsın
+pythonpath = ["."]
+testpaths = ["tests"]
