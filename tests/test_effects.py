@@ -99,3 +99,24 @@ def test_split_keeps_independent_effects(red_video):
     assert right.trans_in == "" and c.trans_in == "cross_dissolve"
     q = Project.from_dict(p.to_dict())
     assert any(x.effects for x in q.clips)
+
+
+def test_one_sided_out_transitions_hide_clip(qapp, red_video):
+    """Komşusu olmayan klibin sonundaki geçiş, klibi gerçekten kaybettirmeli."""
+    p = Project(320, 240, 25)
+    c = p.place_media(p.add_media(probe(red_video)), 0.0)[0]
+    comp = Compositor(p, SourcePool())
+    for kind, _n, _cat in transitions.TRANSITIONS:
+        if kind == "dip_white":
+            continue
+        p.apply_transition(c, "out", kind, 1.0)
+        early = qimage_to_rgb(comp.compose(c.end - 0.95, 320, 240))[60:].mean(0).mean(0)
+        late = qimage_to_rgb(comp.compose(c.end - 0.1, 320, 240))[60:].mean(0).mean(0)
+        assert late[0] < early[0] * 0.5, kind
+
+
+def test_adjacency_tolerates_float_drift(red_video, blue_video):
+    p = Project(320, 240, 25)
+    a = p.place_media(p.add_media(probe(red_video)), 0.0)[0]
+    b = p.place_media(p.add_media(probe(blue_video)), a.end + 0.01)[0]
+    assert p.prev_adjacent(b) is a

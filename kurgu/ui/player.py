@@ -299,8 +299,11 @@ class ProgramMonitor(QWidget):
         h = max(2, int(w * proj.height / proj.width) // 2 * 2)
         try:
             self.view.image = self.comp.compose(t, w, h)
-        except Exception as e:  # önizleme hatası programı düşürmesin
-            print("preview error:", e)
+        except Exception as e:  # önizleme hatası programı düşürmesin, ama görünür olsun
+            import traceback
+            from ..app import log_error
+            log_error("".join(traceback.format_exception(e)))
+            self.main.statusBar().showMessage(f"{_('Preview error')}: {e}", 8000)
         self.view.update()
         self.tc.setText(timecode(t, proj.fps))
         self.dur.setText(timecode(proj.duration, proj.fps))

@@ -351,8 +351,40 @@ class Inspector(QScrollArea):
                     self.fx_add.addItem(f"{_(d.name)}   ·  {_(cat)}", d.id)
         self.fx_add.activated.connect(self._add_effect)
         self.fx_lay.addWidget(self.fx_add)
+        self.fx_empty = QLabel(_("No effects yet. Drag one from the Effects panel or pick above."))
+        self.fx_empty.setWordWrap(True)
+        self.fx_empty.setStyleSheet("color:#80868b; padding:4px;")
+        self.fx_lay.addWidget(self.fx_empty)
+        self.fx_clear = QPushButton(_("Remove All Effects"))
+        self.fx_clear.clicked.connect(lambda: self.clip and self.main.remove_effect(self.clip, None))
+        self.fx_lay.addWidget(self.fx_clear)
         self.fx_boxes: list[EffectBox] = []
-        self.lay.addWidget(self.fx_group)
+        self.lay.insertWidget(1, self.fx_group)  # Efekt denetimleri en üstte
+        # Seçili geçiş düzenleyici (zaman çizelgesinde geçişe tıklanınca)
+        self.tsel_group = QGroupBox(_("Transition"))
+        tsf = QFormLayout(self.tsel_group)
+        self.tsel_kind = QComboBox()
+        for kid, name, _cat in transitions.TRANSITIONS:
+            self.tsel_kind.addItem(_(name), kid)
+        self.tsel_dur = QDoubleSpinBox()
+        self.tsel_dur.setRange(0.04, 10.0)
+        self.tsel_dur.setSingleStep(0.1)
+        self.tsel_dur.setDecimals(2)
+        self.tsel_dur.setSuffix(" s")
+        self.tsel_kind.currentIndexChanged.connect(lambda _i: self._tsel_changed())
+        self.tsel_dur.valueChanged.connect(lambda _v: self._tsel_changed())
+        tsf.addRow(_("Type"), self.tsel_kind)
+        tsf.addRow(_("Duration"), self.tsel_dur)
+        hint = QLabel(_("Tip: drag the transition's edges on the timeline to change its length."))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#80868b;")
+        tsf.addRow(hint)
+        del_btn = QPushButton(_("Delete Transition"))
+        del_btn.clicked.connect(self.main.delete_selected)
+        tsf.addRow(del_btn)
+        self.lay.insertWidget(1, self.tsel_group)
+        self.tsel_group.setVisible(False)
+        self.tsel = None
         self.reset_btn = QPushButton(_("Reset"))
         self.reset_btn.clicked.connect(self._reset)
         self.lay.addWidget(self.reset_btn)
@@ -362,6 +394,8 @@ class Inspector(QScrollArea):
 
     def set_clip(self, clip: Clip | None):
         self.clip = clip
+        self.tsel = None
+        self.tsel_group.setVisible(False)
         enabled = clip is not None
         for box in self.groups.values():
             box.setVisible(enabled)
@@ -410,8 +444,12 @@ class Inspector(QScrollArea):
         if self.fx_group.isVisible():
             for i, e in enumerate(clip.effects):
                 box = EffectBox(self, clip, e, i)
-                self.fx_lay.addWidget(box)
+                self.fx_lay.insertWidget(self.fx_lay.count() - 1, box)
                 self.fx_boxes.append(box)
+            self.fx_empty.setVisible(not clip.effects)
+            self.fx_clear.setVisible(bool(clip.effects))
+            self.fx_group.setTitle(_("Video Effects") + (f" ({len(clip.effects)})"
+                                                         if clip.effects else ""))
         if clip.kind == "text":
             self.text_edit.blockSignals(True)
             self.text_edit.setPlainText(clip.text)
@@ -419,6 +457,49 @@ class Inspector(QScrollArea):
             self.font_spin.blockSignals(True)
             self.font_spin.setValue(clip.font_size)
             self.font_spin.blockSignals(False)
+
+    def set_transition(self, clip: Clip, edge: str):
+        """Zaman çizelgesinde seçilen geçişi düzenle."""
+        self.set_clip(None)
+        self.tsel = (clip, edge)
+        kind = clip.trans_in if edge == "in" else clip.trans_out
+        dur = clip.trans_in_dur if edge == "in" else clip.trans_out_dur
+        self.title.setText(_("Transition") + ": " + _(transitions.NAMES.get(kind, kind))
+                           + "\n" + clip.name)
+        for w in (self.tsel_kind, self.tsel_dur):
+            w.blockSignals(True)
+        self.tsel_kind.setCurrentIndex(max(0, self.tsel_kind.findData(kind)))
+        self.tsel_dur.setValue(dur)
+        for w in (self.tsel_kind, self.tsel_dur):
+            w.blockSignals(False)
+        self.tsel_group.setVisible(True)
+
+    def _tsel_changed(self):
+        if self.tsel is None:
+            return
+        clip, edge = self.tsel
+        self._push_coalesced((clip.id, "tsel", edge))
+        kind, dur = self.tsel_kind.currentData(), self.tsel_dur.value()
+        for c in self.main.project.linked(clip):
+            if edge == "in" and c.trans_in:
+                c.trans_in, c.trans_in_dur = kind, dur
+            elif edge == "out" and c.trans_out:
+                c.trans_out, c.trans_out_dur = kind, dur
+        self.title.setText(_("Transition") + ": " + _(transitions.NAMES.get(kind, kind))
+                           + "\n" + clip.name)
+        self.main.on_edited(refresh_inspector=False)
+
+    def focus_effects(self, index: int | None = None):
+        """Efekt bölümüne kaydır; index verilirse o efekti vurgula."""
+        from PySide6.QtCore import QTimer
+        target = self.fx_group
+        if index is not None and 0 <= index < len(self.fx_boxes):
+            target = self.fx_boxes[index]
+            target.setStyleSheet("QGroupBox { border:1px solid #f0b429; }")
+        dock = self.parentWidget()
+        if dock is not None:
+            dock.raise_()
+        QTimer.singleShot(0, lambda: self.ensureWidgetVisible(target, 0, 40))
 
     def _push_coalesced(self, key):
         last_key, last_t = self._last_edit

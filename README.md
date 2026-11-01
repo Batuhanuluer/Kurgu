@@ -52,6 +52,11 @@ kurgu                              # veya: python -m kurgu
 - **Video geçişleri (16):** çapraz çözülme, siyaha/beyaza geçiş, 4 yönde silme, ahır kapısı,
   saat silmesi, sola/sağa itme, sola/sağa kaydırma, yuvarlak/kutu iris, çapraz yakınlaştırma.
   Kesmenin ortasına yerleşir, ses otomatik sabit güçlü crossfade yapar
+- **Geçiş düzenleme:** zaman çizelgesinde geçişe tıkla → türünü ve süresini değiştir,
+  kenarından sürükleyerek uzat/kısalt, Delete ile sil
+- **Efekt denetimleri:** denetçinin en üstünde; her efektin ayarı, aç/kapa, sırala, sil.
+  Klipteki sarı **fx** rozetine tıklayınca doğrudan efektlere gider
+- **Hata günlüğü:** beklenmeyen hatalar `~/.kurgu/kurgu.log` dosyasına yazılır
 - **Kararma:** giriş/çıkış kararması (görüntü ve ses)
 - **Kopyala / kes / yapıştır** ve **özellikleri yapıştır** (efekt, renk, hareket aktarımı)
 - **Başlıklar:** çok satırlı, renkli, kenarlıklı metin

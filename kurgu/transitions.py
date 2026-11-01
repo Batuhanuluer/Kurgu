@@ -88,7 +88,7 @@ def draw(painter: QPainter, kind: str, a: QImage | None, b: QImage | None, p: fl
     e = _ease(p)
     if kind.startswith(("push", "slide")):
         sign = -1 if kind.endswith("_l") else 1
-        if kind.startswith("push"):
+        if kind.startswith("push") or b is None:  # gelen yoksa giden klip dışarı kayar
             if a is not None:
                 painter.drawImage(QPointF(sign * e * w, 0), a)
         elif a is not None:
@@ -96,11 +96,8 @@ def draw(painter: QPainter, kind: str, a: QImage | None, b: QImage | None, p: fl
         if b is not None:
             painter.drawImage(QPointF(-sign * (1 - e) * w, 0), b)
         return
-    # Maske tabanlı geçişler: A tam, B maske içinde
-    if a is not None:
-        painter.drawImage(0, 0, a)
-    if b is None:
-        return
+    # Maske tabanlı geçişler: A tam, B maske içinde.
+    # Tek taraflı çıkışta (B yok) A, maskenin dışında kalan bölgede çizilir → maske büyüdükçe kaybolur.
     path = QPainterPath()
     if kind == "wipe_lr":
         path.addRect(QRectF(0, 0, w * e, h))
@@ -123,6 +120,18 @@ def draw(painter: QPainter, kind: str, a: QImage | None, b: QImage | None, p: fl
         path.moveTo(c)
         path.arcTo(QRectF(c.x() - big, c.y() - big, 2 * big, 2 * big), 90, -360 * p)
         path.closeSubpath()
+    if b is None:
+        if a is None:
+            return
+        full = QPainterPath()
+        full.addRect(QRectF(0, 0, w, h))
+        painter.save()
+        painter.setClipPath(full.subtracted(path), Qt.IntersectClip)
+        painter.drawImage(0, 0, a)
+        painter.restore()
+        return
+    if a is not None:
+        painter.drawImage(0, 0, a)
     painter.save()
     painter.setClipPath(path, Qt.IntersectClip)
     painter.drawImage(0, 0, b)

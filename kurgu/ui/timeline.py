@@ -60,6 +60,7 @@ class TimelineWidget(QWidget):
         self._drag = None
         self._drop_preview = None
         self._fx_target = None
+        self.sel_trans = None  # seçili geçiş: (klip kimliği, "in" | "out")
         self.waves: dict[str, object] = {}
         self._wave_sig = _WaveSignal()
         self._wave_sig.ready.connect(self.update)
@@ -119,10 +120,10 @@ class TimelineWidget(QWidget):
         fps = self.project.fps
         return round(t * fps) / fps
 
-    def snap(self, t: float, exclude=()) -> float:
+    def snap(self, t: float, exclude=(), radius_px: float = SNAP_PX) -> float:
         if not self.snapping:
             return self.frame_snap(t)
-        best, best_d = t, SNAP_PX / self.pps
+        best, best_d = t, radius_px / self.pps
         for p in self.project.snap_points(exclude) + [self.playhead]:
             d = abs(p - t)
             if d < best_d:
@@ -330,8 +331,8 @@ class TimelineWidget(QWidget):
             p.drawPolygon(QPolygonF([inner.bottomRight(), inner.topRight(),
                                      QPointF(inner.right() - fw, inner.top())]))
         p.restore()
-        if c.effects and r.width() > 26:
-            badge = QRectF(r.right() - 22, r.top() + 3, 18, 13)
+        badge = self.fx_badge_rect(c)
+        if badge is not None:
             p.setPen(Qt.NoPen)
             p.setBrush(QColor("#f0b429"))
             p.drawRoundedRect(badge, 3, 3)
@@ -341,25 +342,44 @@ class TimelineWidget(QWidget):
             p.setPen(QColor(255, 255, 255, 110))
             p.drawLine(r.bottomLeft() + QPointF(4, -3), r.bottomLeft() + QPointF(14, -3))
 
-    def paint_transitions(self, p: QPainter, c: Clip):
+    def trans_spans(self, c: Clip):
+        """Klibin geçişleri: [(dikdörtgen, kenar, pencere başı, süre, tür)]"""
         proj = self.project
         y = self.row_y(c.track)
-        spans = []
+        out = []
         info = proj.trans_in_info(c)
         if info is not None:
-            spans.append((info[1], info[2], c.trans_in))
-        out = proj.trans_out_info(c)
-        if out is not None:
-            spans.append((out[0], out[1], c.trans_out))
+            out.append(("in", info[1], info[2], c.trans_in))
+        o = proj.trans_out_info(c)
+        if o is not None:
+            out.append(("out", o[0], o[1], c.trans_out))
+        return [(QRectF(self.x_of(w0), y + 18, max(8.0, d * self.pps), TRACK_H - 24),
+                 edge, w0, d, kind) for edge, w0, d, kind in out]
+
+    def transition_at(self, pos: QPointF):
+        for c in reversed(self.project.clips):
+            for r, edge, w0, d, kind in self.trans_spans(c):
+                if r.adjusted(-2, -2, 2, 2).contains(pos):
+                    return c, edge, r
+        return None
+
+    def paint_transitions(self, p: QPainter, c: Clip):
         from ..transitions import NAMES
-        for w0, d, kind in spans:
-            r = QRectF(self.x_of(w0), y + 18, max(6.0, d * self.pps), TRACK_H - 24)
-            p.setPen(QPen(QColor(255, 255, 255, 200), 1))
-            p.setBrush(QColor(20, 20, 24, 170))
+        for r, edge, w0, d, kind in self.trans_spans(c):
+            sel = self.sel_trans == (c.id, edge)
+            p.setPen(QPen(QColor("#ffcc33") if sel else QColor(255, 255, 255, 200), 2 if sel else 1))
+            p.setBrush(QColor(90, 70, 20, 220) if sel else QColor(20, 20, 24, 170))
             p.drawRoundedRect(r, 3, 3)
             p.drawLine(r.bottomLeft(), r.topRight())
             if r.width() > 40:
+                p.setPen(QColor("#ffffff"))
                 p.drawText(r.adjusted(3, 0, -3, 0), Qt.AlignCenter, _(NAMES.get(kind, kind)))
+
+    def fx_badge_rect(self, c: Clip) -> QRectF | None:
+        r = self.clip_rect(c)
+        if not c.effects or r.width() <= 26:
+            return None
+        return QRectF(r.right() - 22, r.top() + 3, 18, 13)
 
     def paint_wave(self, p: QPainter, c: Clip, wave, inner: QRectF):
         bps = 50.0
@@ -420,6 +440,22 @@ class TimelineWidget(QWidget):
                     self.edited.emit()
                 self.update()
             return
+        hit = self.transition_at(pos) if self.tool == "select" else None
+        if hit is not None:
+            tclip, edge, r = hit
+            self.sel_trans = (tclip.id, edge)
+            self.selected.clear()
+            self.selection_changed.emit()
+            side = "left" if pos.x() - r.left() <= EDGE_PX else \
+                "right" if r.right() - pos.x() <= EDGE_PX else None
+            if side:
+                self._drag = {"mode": "trans_dur", "clip": tclip.id, "edge": edge,
+                              "side": side, "pushed": False, "x0": pos.x(), "y0": pos.y()}
+            self.update()
+            return
+        if self.sel_trans is not None:
+            self.sel_trans = None
+            self.selection_changed.emit()
         clip = self.clip_at(pos)
         if clip is None:
             if not ev.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
@@ -447,6 +483,11 @@ class TimelineWidget(QWidget):
         elif clip.id not in self.selected:
             self.selected = set(group)
         self.selection_changed.emit()
+        badge = self.fx_badge_rect(clip)
+        if badge is not None and badge.contains(pos):
+            self.main.inspector.focus_effects()
+            self.update()
+            return
         r = self.clip_rect(clip)
         if pos.x() - r.left() <= EDGE_PX:
             mode = "trim_in"
@@ -476,6 +517,27 @@ class TimelineWidget(QWidget):
             return
         clip = self.project.clip_by_id(d["clip"])
         if clip is None:
+            return
+        if d["mode"] == "trans_dur":
+            self._begin_drag_edit()
+            t = self.t_of(pos.x())
+            proj = self.project
+            if d["edge"] == "in":
+                centered = proj.prev_adjacent(clip) is not None
+                dur = 2 * abs(t - clip.start) if centered else t - clip.start
+                kind = clip.trans_in
+            else:
+                dur = clip.end - t
+                kind = clip.trans_out
+            dur = max(1.0 / proj.fps, round(dur * proj.fps) / proj.fps)
+            for c in proj.linked(clip):
+                if d["edge"] == "in" and c.trans_in:
+                    c.trans_in_dur = dur
+                elif d["edge"] == "out" and c.trans_out:
+                    c.trans_out_dur = dur
+            _ = kind
+            self.edited.emit()
+            self.update()
             return
         if abs(pos.x() - d["x0"]) < 3 and abs(pos.y() - d["y0"]) < 3 and not d["pushed"]:
             return
@@ -509,6 +571,8 @@ class TimelineWidget(QWidget):
     def mouseReleaseEvent(self, ev):
         d = self._drag
         self._drag = None
+        if d and d["mode"] == "trans_dur":
+            self.selection_changed.emit()
         if d and d["mode"] == "move" and d.get("pushed"):
             clip = self.project.clip_by_id(d["clip"])
             if clip is not None:
@@ -521,6 +585,14 @@ class TimelineWidget(QWidget):
             self.selection_changed.emit()
         self.update()
 
+    def keyPressEvent(self, ev):
+        # Menü kısayolu bir sebeple tetiklenmezse silme yine çalışsın
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.main.delete_selected(ripple=bool(ev.modifiers() & Qt.ShiftModifier))
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
     def mouseDoubleClickEvent(self, ev):
         clip = self.clip_at(ev.position())
         if clip is not None and clip.kind == "text":
@@ -532,6 +604,12 @@ class TimelineWidget(QWidget):
             return
         if self.tool == "razor":
             self.setCursor(Qt.SplitHCursor if self.clip_at(pos) else Qt.ArrowCursor)
+            return
+        hit = self.transition_at(pos)
+        if hit is not None:
+            r = hit[2]
+            edge = pos.x() - r.left() <= EDGE_PX or r.right() - pos.x() <= EDGE_PX
+            self.setCursor(Qt.SizeHorCursor if edge else Qt.PointingHandCursor)
             return
         c = self.clip_at(pos)
         if c is None:
@@ -553,14 +631,36 @@ class TimelineWidget(QWidget):
             self.update()
 
     def context_menu(self, pos: QPointF):
-        clip = self.clip_at(pos)
+        hit = self.transition_at(pos)
         menu = QMenu(self)
+        if hit is not None:
+            self.sel_trans = (hit[0].id, hit[1])
+            self.selected.clear()
+            self.selection_changed.emit()
+            menu.addAction(_("Delete Transition"), self.main.delete_selected)
+            menu.exec(QCursor.pos())
+            self.update()
+            return
+        clip = self.clip_at(pos)
         if clip is not None:
             if clip.id not in self.selected:
                 self.selected = {c.id for c in self.project.linked(clip)}
                 self.selection_changed.emit()
             menu.addAction(_("Split at Playhead"), self.main.split_at_playhead)
             menu.addAction(_("Duplicate"), self.main.duplicate_selected)
+            vclips = [c for c in self.project.linked(clip) if c.effects]
+            if vclips:
+                fxm = menu.addMenu(_("Effects"))
+                from ..effects import EFFECTS
+                vc = vclips[0]
+                for i, e in enumerate(vc.effects):
+                    d = EFFECTS.get(e["type"])
+                    name = _(d.name) if d else e["type"]
+                    fxm.addAction(_("Remove") + ": " + name,
+                                  lambda c=vc, i=i: self.main.remove_effect(c, i))
+                fxm.addSeparator()
+                fxm.addAction(_("Remove All Effects"),
+                              lambda c=vc: self.main.remove_effect(c, None))
             if clip.link_id:
                 menu.addAction(_("Unlink"), self.main.unlink_selected)
             menu.addSeparator()
@@ -603,7 +703,7 @@ class TimelineWidget(QWidget):
             m = self.project.media.get(mid)
             ti = self.track_at(ev.position().y())
             if m is not None and ti is not None:
-                t0 = self.snap(self.t_of(ev.position().x()))
+                t0 = self.snap(self.t_of(ev.position().x()), radius_px=18)
                 dur = m.duration if m.kind != "image" else 5.0
                 self._drop_preview = (ti, t0, dur)
                 self.update()
@@ -628,7 +728,7 @@ class TimelineWidget(QWidget):
             ev.acceptProposedAction()
             self.update()
             return
-        t0 = self.snap(self.t_of(ev.position().x()))
+        t0 = self.snap(self.t_of(ev.position().x()), radius_px=18)
         ti = self.track_at(ev.position().y())
         if md.hasUrls() and not md.hasFormat(MEDIA_MIME):
             paths = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]

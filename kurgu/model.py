@@ -330,15 +330,19 @@ class Project:
             c.speed = speed
 
     # ------------------------------------------------------------ geçişler
+    @property
+    def adj_tol(self) -> float:
+        return 0.5 / max(self.fps, 1.0)  # yarım kare: kayan nokta kaymalarına dayanıklı
+
     def prev_adjacent(self, clip: Clip) -> Clip | None:
         for c in self.clips:
-            if c.track == clip.track and c is not clip and abs(c.end - clip.start) < 1e-3:
+            if c.track == clip.track and c is not clip and abs(c.end - clip.start) < self.adj_tol:
                 return c
         return None
 
     def next_adjacent(self, clip: Clip) -> Clip | None:
         for c in self.clips:
-            if c.track == clip.track and c is not clip and abs(c.start - clip.end) < 1e-3:
+            if c.track == clip.track and c is not clip and abs(c.start - clip.end) < self.adj_tol:
                 return c
         return None
 

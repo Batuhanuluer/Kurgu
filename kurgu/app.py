@@ -1,5 +1,8 @@
 """Uygulama başlatma ve koyu tema."""
+import os
 import sys
+import time
+import traceback
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
@@ -36,7 +39,34 @@ def apply_dark_theme(app: QApplication):
     """)
 
 
+LOG_PATH = os.path.join(os.path.expanduser("~"), ".kurgu", "kurgu.log")
+_shown: set = set()
+
+
+def log_error(text: str):
+    """Hataları ~/.kurgu/kurgu.log dosyasına yazar (Windows'ta konsol olmadığı için)."""
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text.rstrip() + "\n")
+    except OSError:
+        pass
+    print(text, file=sys.stderr) if sys.stderr else None
+
+
+def _excepthook(exc_type, exc, tb):
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    log_error(text)
+    key = f"{exc_type.__name__}: {exc}"
+    if key in _shown or QApplication.instance() is None:
+        return
+    _shown.add(key)
+    from PySide6.QtWidgets import QMessageBox
+    QMessageBox.warning(None, "Kurgu", f"{key}\n\nLog: {LOG_PATH}")
+
+
 def run(path=None) -> int:
+    sys.excepthook = _excepthook
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Kurgu")
     app.setOrganizationName("Kurgu")

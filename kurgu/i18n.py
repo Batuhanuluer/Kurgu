@@ -78,6 +78,18 @@ TR = {
     "Select a clip first": "Önce bir klip seçin", "Copy": "Kopyala", "Cut": "Kes",
     "Paste": "Yapıştır", "Paste Attributes": "Özellikleri Yapıştır",
     "Apply Default Transition": "Varsayılan Geçişi Uygula", "clip(s) copied": "klip kopyalandı",
+    "Transition": "Geçiş", "Type": "Tür", "Delete Transition": "Geçişi Sil",
+    "Tip: drag the transition's edges on the timeline to change its length.":
+        "İpucu: süresini değiştirmek için zaman çizelgesinde geçişin kenarlarını sürükleyin.",
+    "No effects yet. Drag one from the Effects panel or pick above.":
+        "Henüz efekt yok. Efektler panelinden sürükleyin ya da yukarıdan seçin.",
+    "Remove All Effects": "Tüm Efektleri Kaldır", "Remove": "Kaldır", "applied": "uygulandı",
+    "Effects can only be applied to video or image clips":
+        "Efektler yalnızca video ve görsel kliplerine uygulanabilir",
+    "Preview error": "Önizleme hatası",
+    "no adjacent clip on this side, so the transition goes to/from black. Close the gap to blend two clips.":
+        "bu tarafta bitişik klip yok, geçiş siyaha/siyahtan yapılacak. İki klibi karıştırmak "
+        "için aradaki boşluğu kapatın.",
 }
 
 LANGS = {"tr": TR}

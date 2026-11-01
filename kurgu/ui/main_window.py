@@ -299,6 +299,13 @@ class MainWindow(QMainWindow):
         return [c for c in self.project.clips if c.id in self.timeline.selected]
 
     def _on_selection(self):
+        st = self.timeline.sel_trans
+        if st is not None:
+            clip = self.project.clip_by_id(st[0])
+            if clip is not None:
+                self.inspector.set_transition(clip, st[1])
+                return
+            self.timeline.sel_trans = None
         sel = self.selected_clips()
         video = [c for c in sel if self.project.track_is_video(c.track)]
         self.inspector.set_clip((video or sel or [None])[0])
@@ -439,6 +446,18 @@ class MainWindow(QMainWindow):
         self.on_edited()
 
     def delete_selected(self, ripple=False):
+        st = self.timeline.sel_trans
+        if st is not None:
+            clip = self.project.clip_by_id(st[0])
+            self.timeline.sel_trans = None
+            if clip is not None:
+                self.before_edit()
+                self.project.apply_transition(clip, st[1], "")
+                if st[1] == "out":  # sağ kenar: tek taraflı çıkış geçişini de temizle
+                    for c in self.project.linked(clip):
+                        c.trans_out = ""
+                self.on_edited()
+            return
         if not self.timeline.selected:
             return
         self.before_edit()
@@ -477,17 +496,53 @@ class MainWindow(QMainWindow):
         self.before_edit()
         p = self.project
         if kind == "effect":
+            # Ses klibine bırakıldıysa bağlı video klibine uygula
+            video = []
             for c in targets:
-                if p.track_is_video(c.track) and c.kind == "media":
-                    c.effects.append(fx.new_effect(ident))
+                for x in p.linked(c):
+                    if p.track_is_video(x.track) and x.kind == "media" and x not in video:
+                        video.append(x)
+            if not video:
+                self.history.undo_stack.pop()
+                self.statusBar().showMessage(
+                    _("Effects can only be applied to video or image clips"), 5000)
+                return
+            for c in video:
+                c.effects.append(fx.new_effect(ident))
+            self.timeline.selected = {x.id for c in video for x in p.linked(c)}
+            self.timeline.sel_trans = None
+            self.on_edited()
+            self.inspector.focus_effects(len(video[0].effects) - 1)
+            self.statusBar().showMessage(
+                _(fx.EFFECTS[ident].name) + " " + _("applied") + " → " + video[0].name, 4000)
+            return
         elif kind == "transition":
             done = set()
+            lonely = False
             for c in targets:
                 if c.id not in done:
+                    neighbour = p.prev_adjacent(c) if edge == "in" else p.next_adjacent(c)
+                    lonely |= neighbour is None
                     p.apply_transition(c, edge, ident, 1.0)
                     done.update(x.id for x in p.linked(c))
+            name = _(transitions.NAMES.get(ident, ident))
+            if lonely:
+                self.statusBar().showMessage(
+                    name + ": " + _("no adjacent clip on this side, so the transition goes "
+                                    "to/from black. Close the gap to blend two clips."), 8000)
+            else:
+                self.statusBar().showMessage(name + " " + _("applied"), 4000)
         if clip is not None:
             self.timeline.selected = {x.id for x in p.linked(clip)}
+        self.on_edited()
+
+    def remove_effect(self, clip, index):
+        """index None ise tüm efektleri kaldırır."""
+        self.before_edit()
+        if index is None:
+            clip.effects.clear()
+        elif 0 <= index < len(clip.effects):
+            clip.effects.pop(index)
         self.on_edited()
 
     def apply_default_transition(self):
