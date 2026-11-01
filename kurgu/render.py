@@ -15,6 +15,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 
 from . import effects as fx
+from . import keyframes as kf
 from . import transitions
 from .media import SourcePool
 from .model import Clip, Project
@@ -117,6 +118,7 @@ class Compositor:
         return img
 
     def draw_clip(self, painter: QPainter, clip: Clip, t: float, out_w: int, out_h: int):
+        clip = kf.animated(clip, t)  # anahtar karelerden o anki değerler
         k = out_w / self.project.width  # proje pikselinden çıktı pikseline
         tt = min(max(t, clip.start), clip.end - 1e-6)  # geçiş uzantısında solma sabit
         alpha = clip.opacity * clip.fade_factor(tt)
@@ -152,7 +154,10 @@ class Compositor:
         dw, dh = max(1, int(round(frame.width * s))), max(1, int(round(frame.height * s)))
         # Döndürme yoksa ve büyütme yapılmıyorsa ölçeklemeyi swscale yapsın (hızlı).
         tw, th = (dw, dh) if (s <= 1.0 and not clip.rotation) else (frame.width, frame.height)
-        effects = [e for e in clip.effects if e is not self.disabled_effect]
+        dis = self.disabled_effect
+        effects = [e for e in clip.effects
+                   if dis is None or (e is not dis and (not e.get("id")
+                                                        or e.get("id") != dis.get("id")))]
         has_alpha = frame.format.name.startswith(ALPHA_FORMATS) or fx.needs_alpha(effects)
         fmt = "rgba" if has_alpha else "rgb24"
         arr = frame.to_ndarray(width=tw, height=th, format=fmt)
@@ -215,7 +220,7 @@ class Compositor:
             if p.tracks[ti].muted:
                 continue
             for c in p.clips:
-                if c.track != ti or c.volume <= 0:
+                if c.track != ti or (c.volume <= 0 and not kf.is_animated(c, "volume")):
                     continue
                 lo, hi, tin, tnx, tout = self.clip_audio_span(c)
                 if hi <= t or lo >= t1:
@@ -243,7 +248,11 @@ class Compositor:
                     data = np.stack([np.interp(xs, idx, raw[:, 0]),
                                      np.interp(xs, idx, raw[:, 1])], axis=1).astype(np.float32)
                 times = s0 + np.arange(count, dtype=np.float64) / sr
-                gain = np.full(count, c.volume, np.float32)
+                if kf.is_animated(c, "volume"):
+                    src_t = c.in_point + (times - c.start) * c.speed
+                    gain = kf.eval_keys_array(kf.keys(c, "volume"), src_t)
+                else:
+                    gain = np.full(count, c.volume, np.float32)
                 if c.fade_in > 0 or c.fade_out > 0:
                     ct = np.clip(times, c.start, c.end)
                     if c.fade_in > 0:

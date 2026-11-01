@@ -39,7 +39,8 @@ def register(id, name, category, params=(), needs_alpha=False):
 
 def new_effect(effect_id: str) -> dict:
     d = EFFECTS[effect_id]
-    return {"type": effect_id, "enabled": True,
+    import uuid
+    return {"type": effect_id, "enabled": True, "id": uuid.uuid4().hex[:8],
             "params": {p[0]: p[3] for p in d.params}}
 
 

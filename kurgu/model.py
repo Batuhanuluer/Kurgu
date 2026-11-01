@@ -72,6 +72,8 @@ class Clip:
     trans_out_dur: float = 1.0
     # Video efektleri: [{"type": ..., "enabled": bool, "params": {...}}]
     effects: list = field(default_factory=list)
+    # Anahtar kareler: {"özellik": [[kaynak_zamanı, değer, enterpolasyon], ...]}
+    keyframes: dict = field(default_factory=dict)
     # Metin
     text: str = ""
     font_size: int = 72

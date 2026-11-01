@@ -30,7 +30,7 @@ python -m venv .venv
 kurgu                              # veya: python -m kurgu
 ```
 
-## Özellikler (v0.2)
+## Özellikler (v0.3)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -42,6 +42,15 @@ kurgu                              # veya: python -m kurgu
 - **Efektler:** ölçek, konum, döndürme, opaklık, hız (0.1x – 16x)
 - **Renk:** parlaklık, kontrast, doygunluk
 - **Ses:** klip başına ses düzeyi, dalga formu görünümü
+- **Anahtar kare animasyonu (keyframe):** konum, ölçek, döndürme, opaklık, renk,
+  ses düzeyi ve **tüm efekt parametreleri** zamanla değişebilir.
+  Denetçide ⏱ kronometreyi aç → oynatma kafasını taşı → değeri değiştir: anahtar kare
+  otomatik oluşur. ‹ ◆ › ile anahtarlar arasında gez, ekle/sil.
+  Zaman çizelgesinde ◆ işaretlerini sürükle; sağ tıkla **Doğrusal / Yumuşak (Ease) /
+  Sabit (Hold)** geçiş seç. Anahtarlar kaynağa bağlıdır: klibi bölsen de kırpsan da
+  animasyon doğru yerde kalır
+- **Program monitöründe doğrudan düzenleme:** seçili klibi fareyle sürükleyerek taşı,
+  köşelerinden çekerek ölçekle (kronometre açıksa anahtar kare oluşur)
 - **Efektler paneli (Premiere gibi):** arama, kategoriler, klibin üzerine sürükle-bırak
   veya çift tıkla uygula; efektler sıralanabilir, açılıp kapatılabilir
 - **Anahtarlama:** Chroma Key (yeşil/mavi perde) damlalıkla renk seçme, tolerans,
@@ -81,6 +90,7 @@ kurgu                              # veya: python -m kurgu
 | Ctrl+C / Ctrl+X / Ctrl+V | Kopyala / kes / yapıştır |
 | Ctrl+Alt+V | Özellikleri yapıştır |
 | Ctrl+Shift+D | Çoğalt |
+| Shift+K / Ctrl+Shift+K | Sonraki / önceki anahtar kare |
 | Ctrl+T | Başlık ekle |
 | M | İşaretçi ekle |
 | S | Mıknatısı aç/kapat |
@@ -103,6 +113,7 @@ python -m kurgu proje.kurgu --export cikti.mp4    # arayüzsüz dışa aktar
 kurgu/
   model.py        Proje, iz, klip veri modeli + düzenleme işlemleri + geri al (Qt'den bağımsız)
   media.py        PyAV ile dosya inceleme, kare/ses çözme, önbellek, dalga formu
+  keyframes.py    Anahtar kare animasyonu (enterpolasyon, düzenleme)
   effects.py      Video efektleri (yeni efekt = tek fonksiyon + @register)
   transitions.py  Video geçişleri
   render.py       Katman birleştirme (QPainter), renk, ses miksajı, MP4 dışa aktarma
@@ -123,7 +134,7 @@ görüyorsanız çıktıda da onu alırsınız.
 
 Katkılarınızı bekleyen başlıca konular:
 
-- [ ] Anahtar kare (keyframe) animasyonu
+- [x] Anahtar kare (keyframe) animasyonu
 - [ ] Kaynak monitörü ve giriş/çıkış noktalarıyla (I/O) ekleme
 - [x] Klipler arası geçişler (16 tür)
 - [x] Chroma key, luma key ve 18 video efekti

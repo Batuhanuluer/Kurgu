@@ -17,6 +17,7 @@ from ..media import probe, thumbnail
 from ..model import History, MediaItem, Project, new_id
 from ..render import export
 from .. import effects as fx
+from .. import keyframes as kf
 from .. import transitions
 from .effects_panel import EffectsPanel
 from .panels import Inspector, MediaBin
@@ -158,7 +159,7 @@ class MainWindow(QMainWindow):
         bin_dock.raise_()
         self.clipboard: list = []
         self._dock(_("Inspector"), self.inspector, Qt.RightDockWidgetArea)
-        self.inspector.setMinimumWidth(320)
+        self.inspector.setMinimumWidth(380)
         self.bin.setMinimumWidth(240)
         tl_dock = self._dock(_("Timeline"), self.timeline_panel, Qt.BottomDockWidgetArea)
         self.resizeDocks([tl_dock], [340], Qt.Vertical)
@@ -231,6 +232,8 @@ class MainWindow(QMainWindow):
         self._act(s, _("Add Title"), self.add_title, "Ctrl+T")
         self._act(s, _("Add Marker"), self.add_marker, "M")
         self._act(s, _("Apply Default Transition"), self.apply_default_transition, "Ctrl+D")
+        self._act(s, _("Next keyframe"), lambda: self._jump_any_key(1), "Shift+K")
+        self._act(s, _("Previous keyframe"), lambda: self._jump_any_key(-1), "Ctrl+Shift+K")
         s.addSeparator()
         self._act(s, _("Add Video Track"), lambda: self.add_track("video"))
         self._act(s, _("Add Audio Track"), lambda: self.add_track("audio"))
@@ -299,6 +302,7 @@ class MainWindow(QMainWindow):
         return [c for c in self.project.clips if c.id in self.timeline.selected]
 
     def _on_selection(self):
+        self.monitor.view.update()
         st = self.timeline.sel_trans
         if st is not None:
             clip = self.project.clip_by_id(st[0])
@@ -314,8 +318,10 @@ class MainWindow(QMainWindow):
         self.timeline.set_playhead(t, emit=False)
         self.timeline.ensure_visible(t)
         self.monitor.refresh(t)
+        self.inspector.sync_time(t)
 
     def _on_scrub(self, t):
+        self.inspector.sync_time(t)
         if self.player.playing:
             rate = self.player.rate
             self.player.pause()
@@ -557,12 +563,93 @@ class MainWindow(QMainWindow):
             self.timeline.selected = {x.id for x in p.linked(clip)}
         self.on_edited()
 
+    # ------------------------------------------------------------ anahtar kareler
+    def _playhead_in(self, clip) -> bool:
+        t = self.timeline.playhead
+        if clip.start - 1e-6 <= t <= clip.end + 1e-6:
+            return True
+        self.statusBar().showMessage(
+            _("Move the playhead over the clip to set keyframes"), 5000)
+        return False
+
+    def prop_edit(self, clip, prop, value, push=True):
+        """Denetçi/monitör değer değişikliği. Özellik animasyonluysa oynatma kafasında
+        anahtar kare oluşturur ya da günceller (Premiere'deki gibi)."""
+        if push:
+            self.inspector._push_coalesced((clip.id, prop))
+        if kf.is_animated(clip, prop):
+            if not self._playhead_in(clip):
+                return
+            kf.set_key(clip, prop, clip.source_time(self.timeline.playhead), value,
+                       self.project.fps)
+        else:
+            kf.set_static(clip, prop, value)
+        self.on_edited(refresh_inspector=False)
+        self.inspector.sync_time(self.timeline.playhead)
+
+    @staticmethod
+    def _prop_group(prop):
+        """Konum X ve Y Premiere'deki gibi tek özellik olarak birlikte anahtarlanır."""
+        return ("pos_x", "pos_y") if prop in ("pos_x", "pos_y") else (prop,)
+
+    def toggle_anim(self, clip, prop):
+        if clip is None:
+            return
+        if not kf.is_animated(clip, prop) and not self._playhead_in(clip):
+            self.inspector.sync_time(self.timeline.playhead)
+            return
+        self.before_edit()
+        t = min(max(self.timeline.playhead, clip.start), clip.end)
+        was = kf.is_animated(clip, prop)
+        for pr in self._prop_group(prop):
+            if kf.is_animated(clip, pr) == was:
+                kf.toggle_animation(clip, pr, clip.source_time(t), self.project.fps)
+        self.on_edited(refresh_inspector=False)
+        self.inspector.sync_time(self.timeline.playhead)
+
+    def toggle_key_here(self, clip, prop):
+        if clip is None or not self._playhead_in(clip):
+            return
+        self.before_edit()
+        s = clip.source_time(self.timeline.playhead)
+        here = kf.key_index(kf.keys(clip, prop), s, self.project.fps) is not None
+        for pr in self._prop_group(prop):
+            if here:
+                kf.remove_key(clip, pr, s, self.project.fps)
+            else:
+                kf.set_key(clip, pr, s, kf.value_at(clip, pr, self.timeline.playhead),
+                           self.project.fps)
+        self.on_edited(refresh_inspector=False)
+        self.inspector.sync_time(self.timeline.playhead)
+
+    def jump_key(self, clip, prop, direction):
+        if clip is None:
+            return
+        times = [k[0] for k in kf.keys(clip, prop)] if prop else kf.all_key_times(clip)
+        tl_times = [clip.start + (s - clip.in_point) / clip.speed for s in times]
+        t = self.timeline.playhead
+        eps = 0.5 / self.project.fps
+        cand = [x for x in tl_times if (x > t + eps if direction > 0 else x < t - eps)]
+        if cand:
+            target = min(cand) if direction > 0 else max(cand)
+            self.player.pause()
+            self.timeline.set_playhead(target)
+            self.timeline.ensure_visible(target)
+
+    def _jump_any_key(self, direction):
+        sel = [c for c in self.selected_clips() if c.keyframes]
+        if sel:
+            self.jump_key(sel[0], None, direction)
+
     def remove_effect(self, clip, index):
         """index None ise tüm efektleri kaldırır."""
         self.before_edit()
         if index is None:
+            for e in clip.effects:
+                kf.drop_effect_keys(clip, e)
             clip.effects.clear()
         elif 0 <= index < len(clip.effects):
+            kf.drop_effect_keys(clip, clip.effects[index])
             clip.effects.pop(index)
         self.on_edited()
 
@@ -635,6 +722,7 @@ class MainWindow(QMainWindow):
                 setattr(c, a, getattr(src, a))
             if is_video and c.kind == "media":
                 c.effects = copy.deepcopy(src.effects)
+            c.keyframes = kf.retarget(copy.deepcopy(src.keyframes), src, c)
         self.on_edited()
 
     def unlink_selected(self):
@@ -826,7 +914,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+K", _("Split at Playhead")), ("Delete", _("Delete")),
             ("Shift+Delete", _("Ripple Delete")), ("Ctrl+D", _("Apply Default Transition")),
             ("Ctrl+C / Ctrl+V", _("Copy") + " / " + _("Paste")),
-            ("Ctrl+Alt+V", _("Paste Attributes")), ("Ctrl+Shift+D", _("Duplicate")),
+            ("Ctrl+Alt+V", _("Paste Attributes")), ("Ctrl+Shift+K / Shift+K", _("Previous / next keyframe")), ("Ctrl+Shift+D", _("Duplicate")),
             ("Ctrl+T", _("Add Title")), ("M", _("Add Marker")),
             ("+ / - / \\", _("Zoom In") + " / " + _("Zoom Out") + " / " + _("Zoom to Fit")),
             ("Ctrl+Z / Ctrl+Shift+Z", _("Undo") + " / " + _("Redo")),

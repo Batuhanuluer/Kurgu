@@ -92,6 +92,15 @@ TR = {
         "görüntüyü gösteriyor. Silme ve iris geçişleri görüntüyü yine aynı görüntüyle değiştirdiği "
         "için hiçbir şey olmuyormuş gibi görünür (Premiere'de de böyledir).\n\nGeçişi görmek için: "
         "iki klibin arasından bir parça silin (ya da iki farklı klip kullanın), sonra boşluğu kapatın.",
+    "Toggle animation (stopwatch)": "Animasyonu aç/kapat (kronometre)",
+    "Previous keyframe": "Önceki anahtar kare", "Next keyframe": "Sonraki anahtar kare",
+    "Add / remove keyframe": "Anahtar kare ekle / kaldır",
+    "Move the playhead over the clip to set keyframes":
+        "Anahtar kare için oynatma kafasını klibin üzerine getirin",
+    "Keyframe": "Anahtar Kare", "Linear": "Doğrusal", "Ease In/Out": "Yumuşak (Ease)",
+    "Hold": "Sabit (Hold)", "Delete Keyframe": "Anahtar Kareyi Sil",
+    "Previous / next keyframe": "Önceki / sonraki anahtar kare",
+    "Drag to move, drag corners to scale": "Taşımak için sürükleyin, ölçeklemek için köşeleri çekin",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

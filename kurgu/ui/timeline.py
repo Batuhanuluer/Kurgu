@@ -7,6 +7,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QObject
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF, QPainterPath, QCursor
 from PySide6.QtWidgets import QWidget, QScrollBar, QVBoxLayout, QMenu
 
+from .. import keyframes as kf
 from ..i18n import _
 from ..media import waveform
 from ..model import Clip, Project
@@ -196,6 +197,8 @@ class TimelineWidget(QWidget):
             self.paint_clip(p, c)
         for c in proj.clips:
             self.paint_transitions(p, c)
+        for c in proj.clips:
+            self.paint_keys(p, c)
         if self.sel_gap is not None:
             gt, g0, g1 = self.sel_gap
             gy = self.row_y(gt)
@@ -384,6 +387,41 @@ class TimelineWidget(QWidget):
                 p.setPen(QColor("#ffffff"))
                 p.drawText(r.adjusted(3, 0, -3, 0), Qt.AlignCenter, _(NAMES.get(kind, kind)))
 
+    # ------------------------------------------------------------ anahtar kareler
+    def key_points(self, c: Clip):
+        """Klipteki anahtar karelerin (kaynak zamanı, ekran noktası) listesi."""
+        if not c.keyframes:
+            return []
+        r = self.clip_rect(c)
+        y = r.bottom() - 7
+        out = []
+        for s in kf.all_key_times(c):
+            t = c.start + (s - c.in_point) / c.speed
+            if c.start - 1e-6 <= t <= c.end + 1e-6:
+                out.append((s, QPointF(self.x_of(t), y)))
+        return out
+
+    def key_at(self, pos: QPointF):
+        for c in reversed(self.project.clips):
+            for s, pt in self.key_points(c):
+                if abs(pt.x() - pos.x()) <= 6 and abs(pt.y() - pos.y()) <= 7:
+                    return c, s
+        return None
+
+    def paint_keys(self, p: QPainter, c: Clip):
+        pts = self.key_points(c)
+        if not pts:
+            return
+        sel = c.id in self.selected
+        p.setPen(QPen(QColor("#1b1d21"), 1))
+        here = c.source_time(self.playhead)
+        for s, pt in pts:
+            on = abs(s - here) <= kf.tol(self.project.fps)
+            p.setBrush(QColor("#f0b429") if (sel or on) else QColor(235, 235, 235, 220))
+            d = 5
+            p.drawPolygon(QPolygonF([QPointF(pt.x(), pt.y() - d), QPointF(pt.x() + d, pt.y()),
+                                     QPointF(pt.x(), pt.y() + d), QPointF(pt.x() - d, pt.y())]))
+
     def fx_badge_rect(self, c: Clip) -> QRectF | None:
         r = self.clip_rect(c)
         if not c.effects or r.width() <= 26:
@@ -448,6 +486,18 @@ class TimelineWidget(QWidget):
                     tr.locked = not tr.locked
                     self.edited.emit()
                 self.update()
+            return
+        khit = self.key_at(pos) if self.tool == "select" else None
+        if khit is not None:
+            kclip, s = khit
+            self.sel_trans = None
+            self.sel_gap = None
+            self.selected = {kclip.id}
+            self.selection_changed.emit()
+            self.set_playhead(kclip.start + (s - kclip.in_point) / kclip.speed)
+            self._drag = {"mode": "key", "clip": kclip.id, "s": s, "pushed": False,
+                          "x0": pos.x(), "y0": pos.y()}
+            self.update()
             return
         hit = self.transition_at(pos) if self.tool == "select" else None
         if hit is not None:
@@ -533,6 +583,17 @@ class TimelineWidget(QWidget):
         clip = self.project.clip_by_id(d["clip"])
         if clip is None:
             return
+        if d["mode"] == "key":
+            if abs(pos.x() - d["x0"]) < 3 and not d["pushed"]:
+                return
+            self._begin_drag_edit()
+            t = min(max(self.snap(self.t_of(pos.x()), {clip.id}), clip.start), clip.end)
+            s_new = clip.source_time(t)
+            kf.move_keys_at(clip, d["s"], s_new, self.project.fps)
+            d["s"] = s_new
+            self.set_playhead(t)
+            self.edited.emit()
+            return
         if d["mode"] == "trans_dur":
             self._begin_drag_edit()
             t = self.t_of(pos.x())
@@ -599,6 +660,12 @@ class TimelineWidget(QWidget):
             self.selection_changed.emit()
         self.update()
 
+    def _key_edit(self, clip, fn):
+        self.main.before_edit()
+        fn()
+        self.edited.emit()
+        self.main.inspector.sync_time(self.playhead)
+
     def keyPressEvent(self, ev):
         # Menü kısayolu bir sebeple tetiklenmezse silme yine çalışsın
         if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace):
@@ -618,6 +685,9 @@ class TimelineWidget(QWidget):
             return
         if self.tool == "razor":
             self.setCursor(Qt.SplitHCursor if self.clip_at(pos) else Qt.ArrowCursor)
+            return
+        if self.key_at(pos) is not None:
+            self.setCursor(Qt.PointingHandCursor)
             return
         hit = self.transition_at(pos)
         if hit is not None:
@@ -645,8 +715,23 @@ class TimelineWidget(QWidget):
             self.update()
 
     def context_menu(self, pos: QPointF):
-        hit = self.transition_at(pos)
         menu = QMenu(self)
+        khit = self.key_at(pos)
+        if khit is not None:
+            kclip, s = khit
+            fps = self.project.fps
+            menu.setTitle(_("Keyframe"))
+            for name, it in (("Linear", "linear"), ("Ease In/Out", "ease"), ("Hold", "hold")):
+                a = menu.addAction(_(name))
+                a.triggered.connect(lambda _c=False, it=it: self._key_edit(
+                    kclip, lambda: kf.set_interp_at(kclip, s, it, fps)))
+            menu.addSeparator()
+            menu.addAction(_("Delete Keyframe"), lambda: self._key_edit(
+                kclip, lambda: kf.remove_keys_at(kclip, s, fps)))
+            menu.exec(QCursor.pos())
+            self.update()
+            return
+        hit = self.transition_at(pos)
         if hit is not None:
             self.sel_trans = (hit[0].id, hit[1])
             self.selected.clear()

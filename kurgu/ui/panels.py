@@ -6,12 +6,13 @@ import time
 from PySide6.QtCore import QMimeData, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap, QPainter
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox,
-                               QFormLayout, QGroupBox, QToolButton,
+                               QFormLayout, QGroupBox, QLayout, QToolButton,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
                                QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox,
                                QVBoxLayout, QWidget, QAbstractItemView)
 
 from .. import effects as fx
+from .. import keyframes as kf
 from .. import transitions
 from ..i18n import _
 from ..model import Clip
@@ -131,7 +132,7 @@ class SliderRow(QWidget):
         self.spin.setDecimals(decimals)
         self.spin.setSingleStep(step)
         self.spin.setSuffix(suffix)
-        self.spin.setMinimumWidth(84)
+        self.spin.setMinimumWidth(78)
         self.on_change = on_change
         self._lock = False
         self.slider.valueChanged.connect(lambda v: self._set(v / self.scale, "slider"))
@@ -140,6 +141,9 @@ class SliderRow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.slider, 1)
         lay.addWidget(self.spin)
+        # Kaydırma alanı içerikleri ezmesin: sığmazsa kaydırma çubuğu çıksın
+        self.setMinimumHeight(28)
+        self.spin.setMinimumHeight(24)
 
     def _set(self, v, src):
         if self._lock:
@@ -159,6 +163,64 @@ class SliderRow(QWidget):
         self._lock = False
 
 
+class AnimRow(QWidget):
+    """Animasyonlanabilen bir değer: kaydırıcı + ⏱ kronometre + ‹ ◆ › anahtar düğmeleri."""
+
+    def __init__(self, inspector, prop_fn, slider: "SliderRow"):
+        super().__init__()
+        self.ins = inspector
+        self.prop_fn = prop_fn  # () -> özellik adı (efekt kimliği sonradan oluşabilir)
+        self.slider = slider
+        self.setMinimumHeight(28)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        self.watch = self._btn("⏱", _("Toggle animation (stopwatch)"), checkable=True)
+        self.watch.clicked.connect(lambda: self.ins.main.toggle_anim(self.ins.clip, self.prop))
+        lay.addWidget(self.watch)
+        lay.addWidget(slider, 1)
+        self.prev = self._btn("‹", _("Previous keyframe"))
+        self.prev.clicked.connect(lambda: self.ins.main.jump_key(self.ins.clip, self.prop, -1))
+        self.key = self._btn("◇", _("Add / remove keyframe"))
+        self.key.clicked.connect(lambda: self.ins.main.toggle_key_here(self.ins.clip, self.prop))
+        self.next = self._btn("›", _("Next keyframe"))
+        self.next.clicked.connect(lambda: self.ins.main.jump_key(self.ins.clip, self.prop, 1))
+        for b in (self.prev, self.key, self.next):
+            lay.addWidget(b)
+
+    @property
+    def prop(self) -> str:
+        return self.prop_fn()
+
+    @staticmethod
+    def _btn(text, tip, checkable=False):
+        b = QToolButton()
+        b.setText(text)
+        b.setToolTip(tip)
+        b.setCheckable(checkable)
+        b.setFixedSize(22, 22)
+        b.setAutoRaise(True)
+        return b
+
+    def set_value(self, v):
+        self.slider.set_value(v)
+
+    def sync(self, clip, t: float, fps: float):
+        prop = self.prop
+        anim = kf.is_animated(clip, prop)
+        self.watch.setChecked(anim)
+        self.watch.setStyleSheet("color:#4fc3f7;" if anim else "")
+        for b in (self.prev, self.key, self.next):
+            b.setVisible(anim)
+        if anim:
+            here = kf.key_index(kf.keys(clip, prop), clip.source_time(t), fps) is not None
+            self.key.setText("◆" if here else "◇")
+            self.key.setStyleSheet("color:#f0b429;" if here else "")
+        v = kf.value_at(clip, prop, t)
+        if v is not None:
+            self.slider.set_value(v)
+
+
 class EffectBox(QGroupBox):
     """Denetçide tek bir efektin kontrolleri (Premiere'deki Efekt Denetimleri gibi)."""
 
@@ -166,6 +228,7 @@ class EffectBox(QGroupBox):
         d = fx.EFFECTS.get(effect["type"])
         super().__init__("fx  " + (_(d.name) if d else effect["type"]))
         self.ins, self.clip, self.effect, self.index = inspector, clip, effect, index
+        self.anim_rows: list = []
         form = QFormLayout(self)
         head = QHBoxLayout()
         en = QCheckBox(_("Enabled"))
@@ -187,8 +250,10 @@ class EffectBox(QGroupBox):
         for key, label, kind, default, lo, hi, step, dec in d.params:
             val = effect["params"].get(key, default)
             if kind == "float":
-                row = SliderRow(lo, hi, step, dec, lambda v, k=key: self._set(k, v))
-                row.set_value(val)
+                sl = SliderRow(lo, hi, step, dec, lambda v, k=key: self._set(k, v))
+                sl.set_value(val)
+                row = AnimRow(inspector, lambda k=key: kf.fx_prop(self.effect, k), sl)
+                self.anim_rows.append(row)
                 form.addRow(_(label), row)
             elif kind == "bool":
                 cb = QCheckBox()
@@ -218,9 +283,7 @@ class EffectBox(QGroupBox):
         btn.setStyleSheet(f"background:{color}; color:{txt}; border-radius:4px;")
 
     def _set(self, key, value):
-        self.ins._push_coalesced((self.clip.id, "fx", self.index, key))
-        self.effect["params"][key] = value
-        self.ins.main.on_edited(refresh_inspector=False)
+        self.ins.main.prop_edit(self.clip, kf.fx_prop(self.effect, key), value)
 
     def _toggle(self, on):
         self.ins.main.before_edit()
@@ -237,6 +300,7 @@ class EffectBox(QGroupBox):
 
     def _remove(self):
         self.ins.main.before_edit()
+        kf.drop_effect_keys(self.clip, self.effect)
         self.clip.effects.pop(self.index)
         self.ins.main.on_edited()
 
@@ -282,11 +346,15 @@ class Inspector(QScrollArea):
         self._last_edit = (None, 0.0)
         root = QWidget()
         self.lay = QVBoxLayout(root)
+        # İçerik büyüdükçe kaydırma alanı da büyüsün (aksi halde satırlar ezilir)
+        self.lay.setSizeConstraint(QLayout.SetMinimumSize)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.title = QLabel(_("No clip selected"))
         self.title.setStyleSheet("font-weight:bold; font-size:13px; padding:4px;")
         self.title.setWordWrap(True)
         self.lay.addWidget(self.title)
-        self.rows: dict[str, SliderRow] = {}
+        self.rows: dict = {}
+        self.base_anim_rows: list[AnimRow] = []
         self.groups: dict[str, QGroupBox] = {}
         self.row_labels: dict[str, QLabel] = {}
         forms: dict[str, QFormLayout] = {}
@@ -312,6 +380,9 @@ class Inspector(QScrollArea):
                 self.groups[grp] = box
                 self.lay.addWidget(box)
             row = SliderRow(lo, hi, step, dec, lambda v, f=field: self._apply(f, v), suf)
+            if field in kf.CLIP_PROPS:
+                row = AnimRow(self, lambda f=field: f, row)
+                self.base_anim_rows.append(row)
             lbl = QLabel(_(label))
             self.row_labels[field] = lbl
             forms[grp].addRow(lbl, row)
@@ -450,6 +521,7 @@ class Inspector(QScrollArea):
             self.fx_clear.setVisible(bool(clip.effects))
             self.fx_group.setTitle(_("Video Effects") + (f" ({len(clip.effects)})"
                                                          if clip.effects else ""))
+        self.sync_time(self.main.timeline.playhead)
         if clip.kind == "text":
             self.text_edit.blockSignals(True)
             self.text_edit.setPlainText(clip.text)
@@ -508,8 +580,24 @@ class Inspector(QScrollArea):
             self.main.before_edit()
         self._last_edit = (key, now)
 
+    def sync_time(self, t: float):
+        """Oynatma kafası değişince animasyonlu değerleri ve ◆ durumlarını güncelle."""
+        clip = self.clip
+        if clip is None:
+            return
+        fps = self.main.project.fps
+        for row in self.base_anim_rows:
+            if not row.isHidden():
+                row.sync(clip, t, fps)
+        for box in self.fx_boxes:
+            for row in box.anim_rows:
+                row.sync(clip, t, fps)
+
     def _apply(self, field, value):
         if self.clip is None:
+            return
+        if field in kf.CLIP_PROPS:
+            self.main.prop_edit(self.clip, field, value)
             return
         self._push_coalesced((self.clip.id, field))
         if field == "speed":
