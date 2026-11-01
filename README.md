@@ -30,7 +30,7 @@ python -m venv .venv
 kurgu                              # veya: python -m kurgu
 ```
 
-## Özellikler (v0.3)
+## Özellikler (v0.4)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -49,6 +49,17 @@ kurgu                              # veya: python -m kurgu
   Zaman çizelgesinde ◆ işaretlerini sürükle; sağ tıkla **Doğrusal / Yumuşak (Ease) /
   Sabit (Hold)** geçiş seç. Anahtarlar kaynağa bağlıdır: klibi bölsen de kırpsan da
   animasyon doğru yerde kalır
+- **Akıcı önizleme (Premiere'deki render mantığı):**
+  - Cetvelin altındaki çubuk: **kırmızı** = efektli/geçişli, henüz render edilmemiş;
+    **yeşil** = hazır. **Enter** (Sekans → Efektleri Render Et) ile kırmızı bölümler
+    önceden hesaplanır, sonra takılmadan oynar
+  - Oynatırken arka planda önümüzdeki 2 saniye hazırlanır
+  - **Oynatma çözünürlüğü** (monitörün sağ altında): Tam / 1/2 / 1/4. Durunca her zaman
+    tam çözünürlükte netleşir
+  - Bir klibi düzenleyince yalnızca o klibin göründüğü kareler yeniden hesaplanır
+  - Önbellek varsayılan 1 GB bellek kullanır (`KURGU_CACHE_MB` ile değiştirilebilir)
+- **Mıknatıslı jilet:** jilet aracı başka izdeki kenarlara yaklaşınca yapışır, sarı kılavuz
+  çizgi hizayı gösterir
 - **Program monitöründe doğrudan düzenleme:** seçili klibi fareyle sürükleyerek taşı,
   köşelerinden çekerek ölçekle (kronometre açıksa anahtar kare oluşur)
 - **Efektler paneli (Premiere gibi):** arama, kategoriler, klibin üzerine sürükle-bırak
@@ -91,6 +102,7 @@ kurgu                              # veya: python -m kurgu
 | Ctrl+Alt+V | Özellikleri yapıştır |
 | Ctrl+Shift+D | Çoğalt |
 | Shift+K / Ctrl+Shift+K | Sonraki / önceki anahtar kare |
+| Enter | Efektli bölümleri render et |
 | Ctrl+T | Başlık ekle |
 | M | İşaretçi ekle |
 | S | Mıknatısı aç/kapat |
@@ -116,6 +128,7 @@ kurgu/
   keyframes.py    Anahtar kare animasyonu (enterpolasyon, düzenleme)
   effects.py      Video efektleri (yeni efekt = tek fonksiyon + @register)
   transitions.py  Video geçişleri
+  rendercache.py  Render önbelleği, kare imzası, arka plan işçisi
   render.py       Katman birleştirme (QPainter), renk, ses miksajı, MP4 dışa aktarma
   i18n.py         Çeviriler
   ui/
@@ -143,7 +156,8 @@ Katkılarınızı bekleyen başlıca konular:
 - [ ] Karıştırma modları (çarp, ekran, kaplama…)
 - [ ] Ses mikseri, ses efektleri, normalizasyon
 - [ ] Proxy (düşük çözünürlüklü kopya) ile düzenleme
-- [ ] GPU hızlandırma
+- [ ] GPU hızlandırma (OpenGL/Vulkan ile birleştirme)
+- [ ] Diske kalıcı render dosyaları
 - [ ] Whisper ile otomatik altyazı
 - [ ] Daha fazla çıktı biçimi (ProRes, WebM, GIF)
 - [ ] Hazır paketler: Windows `.exe`, macOS `.app`, Linux AppImage / Flatpak

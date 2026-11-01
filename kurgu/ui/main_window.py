@@ -18,6 +18,7 @@ from ..model import History, MediaItem, Project, new_id
 from ..render import export
 from .. import effects as fx
 from .. import keyframes as kf
+from ..rendercache import FrameCache, FrameSig, RenderWorker, heavy_frames, heavy_intervals
 from .. import transitions
 from .effects_panel import EffectsPanel
 from .panels import Inspector, MediaBin
@@ -144,6 +145,16 @@ class MainWindow(QMainWindow):
         self.thumbnails: dict[str, QImage] = {}
         self.dirty = False
         self.settings = QSettings("Kurgu", "Kurgu")
+        # Render önbelleği ve arka plan işçisi
+        self.version = 0
+        self.cache = FrameCache()
+        self.worker = RenderWorker(self.cache)
+        self._sig = None
+        self._sig_ver = -1
+        self._snap = None
+        self._snap_ver = -1
+        self._prefetch = None
+        self._render_status = (None, [])
         self.player = Player(self)
         self.timeline_panel = TimelinePanel(self)
         self.timeline = self.timeline_panel.timeline
@@ -168,6 +179,13 @@ class MainWindow(QMainWindow):
         self.timeline.selection_changed.connect(self._on_selection)
         self.timeline.edited.connect(lambda: self.on_edited())
         self._build_menus()
+        # Enter = Render; yalnızca zaman çizelgesi / monitör odaktayken (metin kutularını bozmasın)
+        from PySide6.QtGui import QShortcut
+        for wdg in (self.timeline_panel, self.monitor):
+            for k in ("Return", "Enter"):
+                sc = QShortcut(QKeySequence(k), wdg)
+                sc.setContext(Qt.WidgetWithChildrenShortcut)
+                sc.activated.connect(self.render_effects)
         self.resize(1440, 900)
         geo = self.settings.value("geometry")
         if geo:
@@ -232,6 +250,10 @@ class MainWindow(QMainWindow):
         self._act(s, _("Add Title"), self.add_title, "Ctrl+T")
         self._act(s, _("Add Marker"), self.add_marker, "M")
         self._act(s, _("Apply Default Transition"), self.apply_default_transition, "Ctrl+D")
+        s.addSeparator()
+        self._act(s, _("Render Effects") + "\tEnter", self.render_effects)
+        self._act(s, _("Delete Render Files"), self.clear_render_cache)
+        s.addSeparator()
         self._act(s, _("Next keyframe"), lambda: self._jump_any_key(1), "Shift+K")
         self._act(s, _("Previous keyframe"), lambda: self._jump_any_key(-1), "Ctrl+Shift+K")
         s.addSeparator()
@@ -288,6 +310,7 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     def on_edited(self, refresh_inspector=True):
+        self.version += 1
         ids = {c.id for c in self.project.clips}
         self.timeline.selected &= ids
         self.timeline.update()
@@ -331,6 +354,9 @@ class MainWindow(QMainWindow):
 
     def set_tool(self, tool):
         self.timeline.tool = tool
+        self.timeline.razor_hover = None
+        self.timeline.snap_hit = None
+        self.timeline.update()
         self.statusBar().showMessage(_("Razor Tool") if tool == "razor" else _("Selection Tool"))
 
     def toggle_snap(self, on):
@@ -636,6 +662,108 @@ class MainWindow(QMainWindow):
             self.timeline.set_playhead(target)
             self.timeline.ensure_visible(target)
 
+    # ------------------------------------------------------------ render önbelleği
+    def frame_sig(self) -> FrameSig:
+        if self._sig is None or self._sig_ver != self.version or self._sig.p is not self.project:
+            self._sig = FrameSig(self.project)
+            self._sig_ver = self.version
+        return self._sig
+
+    def snapshot(self):
+        """Arka plan işçisi için projenin değişmez kopyası (sürüm başına bir kez)."""
+        if self._snap is None or self._snap_ver != self.version:
+            from ..model import Project
+            self._snap = Project.from_dict(self.project.to_dict())
+            self._snap_ver = self.version
+        return self._snap
+
+    def prefetch(self, fi, w, h):
+        """Oynatırken önümüzdeki ~2 saniyeyi arka planda hazırla."""
+        ahead = int(self.project.fps * 2)
+        st = self._prefetch
+        if st and st[0] == self.version and st[1:3] == (w, h) and fi < st[3] - ahead // 2 \
+                and fi >= st[4]:
+            return
+        last = int(self.project.duration * self.project.fps)
+        frames = list(range(fi + 1, min(fi + 1 + ahead, last + 1)))
+        if frames:
+            self.worker.submit(self.snapshot(), frames, w, h)
+            self._prefetch = (self.version, w, h, frames[-1], fi)
+
+    def render_status(self):
+        """Zaman çizelgesi çubuğu: [(t0, t1, render_edildi_mi)] (en fazla 2 kez/sn hesaplanır)."""
+        import time
+        w, h = self.monitor.frame_size(True)
+        key = (self.version, w, h, self.cache.generation)
+        last_key, runs, stamp = self._render_status if len(self._render_status) == 3 \
+            else (None, [], 0)
+        if key == last_key or (last_key and last_key[:3] == key[:3]
+                               and time.monotonic() - stamp < 0.5):
+            return runs
+        sig = self.frame_sig()
+        fps = self.project.fps
+        runs = []
+        for fi in heavy_frames(self.project):
+            done = self.cache.has((fi, sig(fi / fps), w, h))
+            t0, t1 = fi / fps, (fi + 1) / fps
+            if runs and runs[-1][2] == done and abs(runs[-1][1] - t0) < 1e-6:
+                runs[-1][1] = t1
+            else:
+                runs.append([t0, t1, done])
+        self._render_status = (key, runs, time.monotonic())
+        return runs
+
+    def render_effects(self):
+        """Premiere: Sekans → Efektleri Render Et (Enter). Efektli bölümleri oynatma
+        çözünürlüğünde önceden hesaplar; o bölümler takılmadan oynar."""
+        self.player.pause()
+        w, h = self.monitor.frame_size(True)
+        sig = self.frame_sig()
+        fps = self.project.fps
+        frames = [fi for fi in heavy_frames(self.project)
+                  if not self.cache.has((fi, sig(fi / fps), w, h))]
+        if not frames:
+            self.statusBar().showMessage(_("Nothing to render: all effect sections are ready"), 4000)
+            return
+        cap = int(self.cache.budget * 0.85 // self.cache.frame_bytes(w, h))
+        if len(frames) > cap:
+            start = int(self.timeline.playhead * fps)
+            frames = sorted(frames, key=lambda f: (f < start, f))[:cap]
+            QMessageBox.information(self, _("Render"), _(
+                "The preview cache can hold about {n} frames at this playback resolution; "
+                "rendering the first part from the playhead. Lower the playback resolution "
+                "to render more.").format(n=cap))
+        from PySide6.QtCore import QObject, Signal as _Signal
+
+        class _Bridge(QObject):
+            prog = _Signal(int, int)
+            fin = _Signal(bool)
+        bridge = _Bridge()
+        dlg = QProgressDialog(_("Rendering effects…"), _("Cancel"), 0, len(frames), self)
+        dlg.setWindowTitle(_("Render"))
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        bridge.prog.connect(lambda i, n: dlg.setValue(i))
+        jid = self.worker.submit(self.snapshot(), frames, w, h,
+                                 progress=lambda i, n: bridge.prog.emit(i, n),
+                                 done=lambda ok: bridge.fin.emit(ok))
+        dlg.canceled.connect(self.worker.cancel)
+
+        def finished(ok):
+            dlg.close()
+            self._render_status = (None, [])
+            self.timeline.update()
+            if ok:
+                self.statusBar().showMessage(_("Render finished: effect sections play smoothly"), 5000)
+        bridge.fin.connect(finished)
+        self._render_bridge = (bridge, jid)
+
+    def clear_render_cache(self):
+        self.cache.clear()
+        self._render_status = (None, [])
+        self.timeline.update()
+        self.statusBar().showMessage(_("Render files deleted"), 3000)
+
     def _jump_any_key(self, direction):
         sel = [c for c in self.selected_clips() if c.keyframes]
         if sel:
@@ -799,6 +927,9 @@ class MainWindow(QMainWindow):
         self.timeline.waves.clear()
         self.timeline.selected.clear()
         self.monitor.reset()
+        self.cache.clear()
+        self.worker.reset_sources()
+        self.version += 1
         self.dirty = False
         self.bin.rebuild()
         self.timeline.set_playhead(0.0, emit=False)
@@ -826,6 +957,9 @@ class MainWindow(QMainWindow):
         self.timeline.waves.clear()
         self.timeline.selected.clear()
         self.monitor.reset()
+        self.cache.clear()
+        self.worker.reset_sources()
+        self.version += 1
         missing = [m.name for m in p.media.values() if not os.path.exists(m.path)]
         for m in p.media.values():
             self._make_thumb(m)
@@ -914,7 +1048,8 @@ class MainWindow(QMainWindow):
             ("Ctrl+K", _("Split at Playhead")), ("Delete", _("Delete")),
             ("Shift+Delete", _("Ripple Delete")), ("Ctrl+D", _("Apply Default Transition")),
             ("Ctrl+C / Ctrl+V", _("Copy") + " / " + _("Paste")),
-            ("Ctrl+Alt+V", _("Paste Attributes")), ("Ctrl+Shift+K / Shift+K", _("Previous / next keyframe")), ("Ctrl+Shift+D", _("Duplicate")),
+            ("Ctrl+Alt+V", _("Paste Attributes")), ("Ctrl+Shift+K / Shift+K", _("Previous / next keyframe")),
+            ("Enter", _("Render Effects")), ("Ctrl+Shift+D", _("Duplicate")),
             ("Ctrl+T", _("Add Title")), ("M", _("Add Marker")),
             ("+ / - / \\", _("Zoom In") + " / " + _("Zoom Out") + " / " + _("Zoom to Fit")),
             ("Ctrl+Z / Ctrl+Shift+Z", _("Undo") + " / " + _("Redo")),
@@ -934,5 +1069,6 @@ class MainWindow(QMainWindow):
             ev.ignore()
             return
         self.player.pause()
+        self.worker.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
         ev.accept()

@@ -260,6 +260,16 @@ class ProgramMonitor(QWidget):
         controls.addWidget(btn(QStyle.SP_MediaSkipForward, _("Go to End") + " (End)",
                                main.go_end))
         controls.addStretch(1)
+        from PySide6.QtWidgets import QComboBox
+        self.res_combo = QComboBox()
+        self.res_combo.setToolTip(_("Playback resolution: lower = smoother playback with heavy effects"))
+        for label, f in (("Full", 1.0), ("1/2", 0.5), ("1/4", 0.25)):
+            self.res_combo.addItem(_("Playback") + ": " + _(label), f)
+        saved = float(main.settings.value("play_factor", 0.5))
+        self.res_combo.setCurrentIndex(max(0, self.res_combo.findData(saved)))
+        self.res_combo.currentIndexChanged.connect(self._res_changed)
+        self.play_factor = self.res_combo.currentData()
+        controls.addWidget(self.res_combo)
         controls.addWidget(self.dur)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
@@ -269,9 +279,16 @@ class ProgramMonitor(QWidget):
         self.view.monitor = self
         self.view.setToolTip(_("Drag to move, drag corners to scale"))
 
+    def _res_changed(self, _i):
+        self.play_factor = self.res_combo.currentData()
+        self.main.settings.setValue("play_factor", self.play_factor)
+        self.main.timeline.update()
+
     def _on_state(self, playing):
         icon = QStyle.SP_MediaPause if playing else QStyle.SP_MediaPlay
         self.play_btn.setIcon(self.style().standardIcon(icon))
+        if not playing:  # durunca tam çözünürlükte netleştir
+            self.refresh(self.main.timeline.playhead)
 
     def reset(self):
         self.pool.close()
@@ -431,18 +448,36 @@ class ProgramMonitor(QWidget):
             callback(QColor(rs // n, gs // n, bs // n).name())
         self.view.on_click = clicked
 
+    def frame_size(self, playing: bool):
+        """Duraklatılmışken ekrana göre net görüntü; oynatırken seçilen oynatma çözünürlüğü
+        (sabit boyut: render önbelleği pencere boyutundan bağımsız kalsın)."""
+        proj = self.main.project
+        if playing:
+            w = int(min(PREVIEW_MAX_W, proj.width) * self.play_factor)
+        else:
+            r = self.view.target_rect()
+            w = int(min(r.width() * self.devicePixelRatioF(), PREVIEW_MAX_W, proj.width))
+        w = max(w // 2 * 2, 64)
+        return w, max(2, int(w * proj.height / proj.width) // 2 * 2)
+
     def refresh(self, t: float):
         proj = self.main.project
         if self.comp is None or self.comp.project is not proj:
             self.comp = Compositor(proj, self.pool)
         self.view.aspect = proj.width / proj.height
-        r = self.view.target_rect()
-        ratio = self.devicePixelRatioF()
-        w = int(min(r.width() * ratio, PREVIEW_MAX_W, proj.width)) // 2 * 2
-        w = max(w, 64)
-        h = max(2, int(w * proj.height / proj.width) // 2 * 2)
+        playing = self.main.player.playing
+        w, h = self.frame_size(playing)
+        fi = int(round(t * proj.fps))
+        tq = fi / proj.fps  # kareye hizalı zaman: önbellek anahtarı tutarlı olsun
         try:
-            self.view.image = self.comp.compose(t, w, h)
+            key = (fi, self.main.frame_sig()(tq), w, h)
+            img = self.main.cache.get(key)
+            if img is None:
+                img = self.comp.compose(tq, w, h)
+                self.main.cache.put(key, img)
+            self.view.image = img
+            if playing:
+                self.main.prefetch(fi, w, h)
         except Exception as e:  # önizleme hatası programı düşürmesin, ama görünür olsun
             import traceback
             from ..app import log_error

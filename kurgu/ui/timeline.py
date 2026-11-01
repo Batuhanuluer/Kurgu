@@ -61,6 +61,8 @@ class TimelineWidget(QWidget):
         self._drag = None
         self._drop_preview = None
         self._fx_target = None
+        self.snap_hit = None  # yapışılan zaman (kılavuz çizgi)
+        self.razor_hover = None  # jilet önizlemesi: (zaman, iz)
         self.sel_gap = None  # seçili boşluk: (iz, başlangıç, bitiş)
         self.sel_trans = None  # seçili geçiş: (klip kimliği, "in" | "out")
         self.waves: dict[str, object] = {}
@@ -123,6 +125,9 @@ class TimelineWidget(QWidget):
         return round(t * fps) / fps
 
     def snap(self, t: float, exclude=(), radius_px: float = SNAP_PX) -> float:
+        """Yakındaki klip kenarına / işaretçiye / oynatma kafasına yapıştırır.
+        Yapıştıysa self.snap_hit o zamanı tutar (sarı kılavuz çizgi çizilir)."""
+        self.snap_hit = None
         if not self.snapping:
             return self.frame_snap(t)
         best, best_d = t, radius_px / self.pps
@@ -130,7 +135,16 @@ class TimelineWidget(QWidget):
             d = abs(p - t)
             if d < best_d:
                 best, best_d = p, d
-        return self.frame_snap(best) if best == t else best
+        if best == t:
+            return self.frame_snap(t)
+        self.snap_hit = best
+        return best
+
+    def razor_time(self, pos: QPointF, clip: Clip) -> float:
+        """Jilet: kendi kenarları hariç diğer izlerdeki kenarlara yapışarak kesme zamanı."""
+        own = {c.id for c in self.project.linked(clip)}
+        t = self.snap(self.t_of(pos.x()), own, radius_px=SNAP_PX * 1.6)
+        return min(max(t, clip.start), clip.end)
 
     # ------------------------------------------------------------ yakınlaştırma
     def zoom(self, factor: float, anchor_x: float | None = None):
@@ -172,7 +186,10 @@ class TimelineWidget(QWidget):
 
         def work():
             self.waves[media_id] = waveform(m.path)
-            self._wave_sig.ready.emit()
+            try:
+                self._wave_sig.ready.emit()
+            except RuntimeError:  # pencere kapandıysa
+                pass
         threading.Thread(target=work, daemon=True).start()
         return None
 
@@ -225,6 +242,26 @@ class TimelineWidget(QWidget):
             self.paint_header(p, ti, y)
         # Cetvel
         self.paint_ruler(p, w)
+        # Jilet önizlemesi ve yapışma kılavuzu
+        if self.tool == "razor" and self.razor_hover is not None:
+            rt, rtrack = self.razor_hover
+            rx = self.x_of(rt)
+            ry = self.row_y(rtrack)
+            snapped = self.snap_hit is not None
+            p.setPen(QPen(QColor("#ffcc33") if snapped else QColor(255, 255, 255, 200), 2))
+            p.drawLine(int(rx), int(ry + 2), int(rx), int(ry + TRACK_H - 2))
+        guide = self.snap_hit if (self._drag is not None or self.razor_hover is not None
+                                  or self._drop_preview is not None) else None
+        if guide is not None:
+            gx = self.x_of(guide)
+            p.setPen(QPen(QColor("#ffcc33"), 1, Qt.DashLine))
+            p.drawLine(int(gx), RULER_H, int(gx), h)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#ffcc33"))
+            p.drawPolygon(QPolygonF([QPointF(gx - 5, RULER_H), QPointF(gx + 5, RULER_H),
+                                     QPointF(gx, RULER_H + 6)]))
+            p.drawPolygon(QPolygonF([QPointF(gx - 5, h), QPointF(gx + 5, h),
+                                     QPointF(gx, h - 6)]))
         # Oynatma kafası
         x = self.x_of(self.playhead)
         if x >= HEADER_W:
@@ -265,6 +302,19 @@ class TimelineWidget(QWidget):
             p.setBrush(QColor("#f5c542"))
             p.setPen(Qt.NoPen)
             p.drawPolygon(QPolygonF([QPointF(x - 5, 14), QPointF(x + 5, 14), QPointF(x, 22)]))
+        p.setClipping(False)
+        # Render çubuğu: kırmızı = efektli, render edilmemiş; yeşil = hazır
+        try:
+            runs = self.main.render_status()
+        except Exception:
+            runs = []
+        p.setClipRect(HEADER_W, 0, w - HEADER_W, RULER_H)
+        for t0, t1, done in runs:
+            x0, x1 = self.x_of(t0), self.x_of(t1)
+            if x1 < HEADER_W or x0 > w:
+                continue
+            p.fillRect(QRectF(x0, RULER_H - 5, max(1.0, x1 - x0), 4),
+                       QColor("#3fbf5f") if done else QColor("#d64545"))
         p.setClipping(False)
         p.setPen(QColor("#111"))
         p.drawLine(0, RULER_H - 1, w, RULER_H - 1)
@@ -532,7 +582,7 @@ class TimelineWidget(QWidget):
         if self.project.tracks[clip.track].locked:
             return
         if self.tool == "razor":
-            t = self.snap(self.t_of(pos.x()))
+            t = self.razor_time(pos, clip)
             self.main.before_edit()
             ids = [c.id for c in self.project.linked(clip)]
             self.project.split_at(t, ids)
@@ -643,9 +693,17 @@ class TimelineWidget(QWidget):
             self.edited.emit()
         self.update()
 
+    def leaveEvent(self, ev):
+        if self.razor_hover is not None:
+            self.razor_hover = None
+            self.snap_hit = None
+            self.update()
+        super().leaveEvent(ev)
+
     def mouseReleaseEvent(self, ev):
         d = self._drag
         self._drag = None
+        self.snap_hit = None
         if d and d["mode"] == "trans_dur":
             self.selection_changed.emit()
         if d and d["mode"] == "move" and d.get("pushed"):
@@ -684,7 +742,16 @@ class TimelineWidget(QWidget):
             self.setCursor(Qt.ArrowCursor)
             return
         if self.tool == "razor":
-            self.setCursor(Qt.SplitHCursor if self.clip_at(pos) else Qt.ArrowCursor)
+            clip = self.clip_at(pos)
+            self.setCursor(Qt.SplitHCursor if clip else Qt.ArrowCursor)
+            old = self.razor_hover
+            if clip is not None and not self.project.tracks[clip.track].locked:
+                self.razor_hover = (self.razor_time(pos, clip), clip.track)
+            else:
+                self.razor_hover = None
+                self.snap_hit = None
+            if self.razor_hover != old:
+                self.update()
             return
         if self.key_at(pos) is not None:
             self.setCursor(Qt.PointingHandCursor)

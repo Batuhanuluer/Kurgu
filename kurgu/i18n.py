@@ -101,6 +101,19 @@ TR = {
     "Hold": "Sabit (Hold)", "Delete Keyframe": "Anahtar Kareyi Sil",
     "Previous / next keyframe": "Önceki / sonraki anahtar kare",
     "Drag to move, drag corners to scale": "Taşımak için sürükleyin, ölçeklemek için köşeleri çekin",
+    "Render Effects": "Efektleri Render Et", "Delete Render Files": "Render Dosyalarını Sil",
+    "Render": "Render", "Rendering effects…": "Efektler render ediliyor…",
+    "Nothing to render: all effect sections are ready":
+        "Render edilecek bir şey yok: tüm efektli bölümler hazır",
+    "Render finished: effect sections play smoothly":
+        "Render bitti: efektli bölümler artık akıcı oynar",
+    "Render files deleted": "Render dosyaları silindi",
+    "The preview cache can hold about {n} frames at this playback resolution; rendering the first part from the playhead. Lower the playback resolution to render more.":
+        "Önizleme önbelleği bu oynatma çözünürlüğünde yaklaşık {n} kare tutabiliyor; oynatma "
+        "kafasından itibaren ilk kısım render ediliyor. Daha fazlası için oynatma çözünürlüğünü düşürün.",
+    "Playback": "Oynatma", "Full": "Tam",
+    "Playback resolution: lower = smoother playback with heavy effects":
+        "Oynatma çözünürlüğü: düşük = ağır efektlerde daha akıcı oynatma",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

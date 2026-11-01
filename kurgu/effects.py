@@ -144,12 +144,13 @@ def _cbcr(r, g, b):
     ("spill", "Spill Suppression", "float", 0.6, 0.0, 1.0, 0.05, 2),
     ("choke", "Choke", "float", 0.0, 0.0, 1.0, 0.05, 2),
 ], needs_alpha=True)
-def chroma_key(arr, p, ctx):
-    """Kroma düzleminde anahtar yönüne benzerlik: piksel rengi anahtar renk yönünde
-    güçlü (along) ve o yönden az sapmış (perp) ise saydamlaşır. Böylece perdenin
-    aydınlık ve gölgeli bölgeleri birlikte silinir, ten ve beyaz/siyah korunur."""
-    rgb = _rgb(arr)
-    kr, kg, kb = hex_to_rgb(p["color"])
+def _chroma_placeholder(arr, p, ctx):
+    return chroma_key(arr, p, ctx)
+
+
+def _chroma_alpha(rgb, key, tolerance, softness, choke):
+    """Anahtar renk yönüne benzerlikten saydamlık (0..1). rgb: (..., 3) float."""
+    kr, kg, kb = key
     cb, cr = _cbcr(rgb[..., 0], rgb[..., 1], rgb[..., 2])
     kcb, kcr = _cbcr(kr, kg, kb)
     kmag = max(math.hypot(kcb, kcr), 20.0)
@@ -157,19 +158,65 @@ def chroma_key(arr, p, ctx):
     along = cb * ux + cr * uy
     perp = np.abs(-cb * uy + cr * ux)
     score = (along - 1.5 * perp) / kmag
-    lo = 0.3 * (1.0 - p["tolerance"])
-    hi = lo + max(p["softness"], 0.01) * 0.5
+    lo = 0.3 * (1.0 - tolerance)
+    hi = lo + max(softness, 0.01) * 0.5
     a = 1.0 - np.clip((score - lo) / (hi - lo), 0.0, 1.0)
-    if p["choke"] > 0:
-        a = np.clip((a - p["choke"] * 0.5) / max(1 - p["choke"] * 0.5, 1e-3), 0, 1)
+    if choke > 0:
+        a = np.clip((a - choke * 0.5) / max(1 - choke * 0.5, 1e-3), 0, 1)
+    return a
+
+
+_LUT_BITS = 6
+_CHROMA_LUTS: dict = {}
+
+
+def _chroma_lut(key, tolerance, softness, choke) -> np.ndarray:
+    """64×64×64 renk küpü için saydamlık tablosu (uint8). Parametreler değişmedikçe
+    bir kez hesaplanır; her karede piksel başına formül yerine tablodan okunur."""
+    k = (key, round(tolerance, 4), round(softness, 4), round(choke, 4))
+    lut = _CHROMA_LUTS.get(k)
+    if lut is None:
+        n = 1 << _LUT_BITS
+        step = 256 // n
+        v = (np.arange(n, dtype=np.float32) * step + (step - 1) / 2)
+        grid = np.stack(np.meshgrid(v, v, v, indexing="ij"), axis=-1)  # r, g, b
+        lut = (_chroma_alpha(grid, key, tolerance, softness, choke) * 255 + 0.5) \
+            .astype(np.uint8).reshape(-1)
+        if len(_CHROMA_LUTS) > 16:
+            _CHROMA_LUTS.clear()
+        _CHROMA_LUTS[k] = lut
+    return lut
+
+
+def chroma_key(arr, p, ctx):
+    """Kroma düzleminde anahtar yönüne benzerlik: piksel rengi anahtar renk yönünde
+    güçlü (along) ve o yönden az sapmış (perp) ise saydamlaşır. Böylece perdenin
+    aydınlık ve gölgeli bölgeleri birlikte silinir, ten ve beyaz/siyah korunur.
+
+    Hız için: saydamlık 6 bit/kanal renk tablosundan okunur, renk taşması giderme
+    tamsayı aritmetiğiyle yalnızca anahtar kanalda yapılır.
+    """
+    key = hex_to_rgb(p["color"])
+    lut = _chroma_lut(key, p["tolerance"], p["softness"], p["choke"])
+    sh = 8 - _LUT_BITS
+    r = arr[..., 0] >> sh
+    g = arr[..., 1] >> sh
+    b = arr[..., 2] >> sh
+    idx = (r.astype(np.uint32) << (2 * _LUT_BITS)) | (g.astype(np.uint32) << _LUT_BITS) | b
+    a = lut[idx]
     if p["spill"] > 0:
-        ch = int(np.argmax([kr, kg, kb]))
+        ch = int(np.argmax(key))
         o1, o2 = [i for i in range(3) if i != ch]
-        lim = (rgb[..., o1] + rgb[..., o2]) / 2
-        c = rgb[..., ch]
-        rgb[..., ch] = c - np.maximum(c - lim, 0) * p["spill"]
-    _put(arr, rgb)
-    arr[..., 3] = (arr[..., 3].astype(np.float32) * a).astype(np.uint8)
+        c = arr[..., ch].astype(np.int16)
+        lim = (arr[..., o1].astype(np.int16) + arr[..., o2]) >> 1
+        d = np.maximum(c - lim, 0)
+        c -= (d * int(p["spill"] * 256)) >> 8
+        arr[..., ch] = c.astype(np.uint8)
+    alpha = arr[..., 3]
+    if alpha.min() == 255:
+        arr[..., 3] = a
+    else:
+        arr[..., 3] = ((alpha.astype(np.uint16) * a + 127) // 255).astype(np.uint8)
     return arr
 
 
