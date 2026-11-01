@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.kurgu.Kurgu</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Kurgu</name>
+  <summary>Free, open-source video editor</summary>
+  <summary xml:lang="tr">Özgür ve açık kaynak video düzenleyici</summary>
+  <description>
+    <p>Kurgu is a professional, cross-platform non-linear video editor.</p>
+    <p xml:lang="tr">Kurgu, profesyonel ve platformlar arası bir doğrusal olmayan video düzenleyicidir.</p>
+    <ul>
+      <li>Multi-track timeline with ripple, roll, slip and slide tools</li>
+      <li>Source monitor, multi-camera editing with audio sync</li>
+      <li>Lumetri-style color correction with curves, color wheels and scopes</li>
+      <li>Masks, blend modes, track mattes, keyframes and transitions</li>
+      <li>Automatic captions (Whisper), audio mixer and loudness normalization</li>
+      <li>Export presets including H.265 10-bit and ProRes</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">org.kurgu.Kurgu.desktop</launchable>
+  <url type="homepage">https://github.com/Batuhanuluer/Kurgu</url>
+  <url type="bugtracker">https://github.com/Batuhanuluer/Kurgu/issues</url>
+  <developer id="io.github.batuhanuluer">
+    <name>Batuhan Uluer</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+  </categories>
+  <releases>
+    <release version="0.9.0" date="2026-11-01"/>
+    <release version="0.8.1" date="2026-11-01"/>
+  </releases>
+</component>

@@ -75,6 +75,16 @@ def _excepthook(exc_type, exc, tb):
     QMessageBox.warning(None, "Kurgu", f"{key}\n\nLog: {LOG_PATH}")
 
 
+def install_qt_translations(app):
+    """Qt'nin kendi düğmeleri (İptal, Evet/Hayır, dosya pencereleri) sistem dilinde olsun."""
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+    tr = QTranslator(app)
+    if tr.load(QLocale.system(), "qtbase", "_",
+               QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(tr)
+        app._kurgu_qt_tr = tr  # çöp toplayıcı silmesin
+
+
 def run(path=None) -> int:
     sys.excepthook = _excepthook
     app = QApplication.instance() or QApplication(sys.argv)
@@ -91,6 +101,7 @@ def run(path=None) -> int:
         except Exception:
             pass
     apply_dark_theme(app)
+    install_qt_translations(app)
     from .ui.main_window import MainWindow
     w = MainWindow(path)
     w.show()

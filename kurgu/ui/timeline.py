@@ -26,7 +26,7 @@ MAGNET_PX = 18  # komşunun üzerine bu kadar binerse kenarına dayan (üzerine 
 
 COLORS = {
     "video": QColor("#3d6fb6"), "image": QColor("#2f8f86"), "audio": QColor("#3f8a4e"),
-    "text": QColor("#8a55b5"), "missing": QColor("#8a3a3a"),
+    "text": QColor("#8a55b5"), "missing": QColor("#8a3a3a"), "caption": QColor("#b58a2a"),
 }
 
 
@@ -394,8 +394,14 @@ class TimelineWidget(QWidget):
         p.drawText(QRectF(8, 0, HEADER_W - 16, RULER_H), Qt.AlignVCenter | Qt.AlignLeft,
                    timecode(self.playhead, self.project.fps))
         # Uygun aralık seç
-        steps = [1 / self.project.fps, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
-        step = next((s for s in steps if s * self.pps >= 70), 1200)
+        fps = self.project.fps
+        # Kare katları (kare sınırına oturan etiketler), sonra saniyeler; etiketler çakışmasın
+        steps = [n / fps for n in (1, 2, 5, 10)] + [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300,
+                                                    600, 1200, 1800, 3600]
+        need_frames = p.fontMetrics().horizontalAdvance("00:00:00:00") + 14
+        need_secs = p.fontMetrics().horizontalAdvance("00:00:00") + 14
+        step = next((s for s in steps
+                     if s * self.pps >= (need_secs if s >= 1 else need_frames)), 7200)
         t = (int(self.scroll / step)) * step
         end = self.t_of(w)
         p.setClipRect(HEADER_W, 0, w - HEADER_W, RULER_H)
@@ -411,6 +417,16 @@ class TimelineWidget(QWidget):
                 label = label[:-3]
             p.drawText(int(x) + 3, 12, label)
             t += step
+        pr = self.project
+        if pr.seq_in is not None or pr.seq_out is not None:  # sekans I/O aralığı
+            a, b = pr.in_out_range()
+            xa, xb = self.x_of(a), self.x_of(b)
+            p.fillRect(QRectF(xa, RULER_H - 12, xb - xa, 7), QColor(79, 140, 255, 110))
+            p.setPen(QPen(QColor("#4f8cff"), 2))
+            if pr.seq_in is not None:
+                p.drawLine(QPointF(xa, 2), QPointF(xa, RULER_H - 2))
+            if pr.seq_out is not None:
+                p.drawLine(QPointF(xb, 2), QPointF(xb, RULER_H - 2))
         for m in self.project.markers:
             x = self.x_of(m)
             p.setBrush(QColor("#f5c542"))
@@ -436,7 +452,7 @@ class TimelineWidget(QWidget):
     def paint_header(self, p: QPainter, ti: int, y: float):
         tr = self.project.tracks[ti]
         r = QRectF(0, y, HEADER_W - 1, TRACK_H - 1)
-        p.fillRect(r, QColor("#2b2f36"))
+        p.fillRect(r, QColor("#3a3324") if tr.captions else QColor("#2b2f36"))
         p.setPen(QColor("#e8eaed"))
         f = QFont(self.font())
         f.setBold(True)
@@ -465,6 +481,8 @@ class TimelineWidget(QWidget):
         is_audio_track = not self.project.track_is_video(c.track)
         if c.kind == "text":
             col = COLORS["text"]
+        elif c.kind == "caption":
+            col = COLORS["caption"]
         elif media is None:
             col = COLORS["missing"]
         elif is_audio_track:
@@ -490,7 +508,10 @@ class TimelineWidget(QWidget):
             if wave is not None and len(wave):
                 self.paint_wave(p, c, wave, inner)
         p.setPen(QColor("#ffffff"))
-        label = c.name if c.kind != "text" else "T  " + c.text.replace("\n", " ")
+        label = c.name if c.kind not in ("text", "caption") else \
+            ("T  " if c.kind == "text" else "") + c.text.replace("\n", " ")
+        if c.mc and self.project.track_is_video(c.track):
+            label = f"[{c.mc_angle + 1}] {label}"
         if abs(c.speed - 1) > 1e-3:
             label += f"  [{c.speed:.2f}x]"
         p.drawText(QRectF(text_x, inner.top(), inner.width() - 6, 15),
@@ -594,6 +615,7 @@ class TimelineWidget(QWidget):
 
     def paint_wave(self, p: QPainter, c: Clip, wave, inner: QRectF):
         bps = 50.0
+        off = self.project.media_offset(c)
         mid = inner.top() + 16 + (inner.height() - 16) / 2
         amp = (inner.height() - 18) / 2
         x0 = max(inner.left(), HEADER_W)
@@ -604,7 +626,7 @@ class TimelineWidget(QWidget):
         pts_top, pts_bot = [], []
         while x <= x1:
             t = self.t_of(x)
-            src = c.source_time(t)
+            src = c.source_time(t) - off
             i = int(src * bps)
             v = float(wave[i]) if 0 <= i < len(wave) else 0.0
             v = min(1.0, v * c.volume)
@@ -964,7 +986,9 @@ class TimelineWidget(QWidget):
 
     def mouseDoubleClickEvent(self, ev):
         clip = self.clip_at(ev.position())
-        if clip is not None and clip.kind == "text":
+        if clip is not None and clip.kind == "caption":
+            self.main.edit_caption(clip)
+        elif clip is not None and clip.kind == "text":
             self.main.edit_title(clip)
 
     def update_cursor(self, pos: QPointF):
@@ -1135,7 +1159,12 @@ class TimelineWidget(QWidget):
             mid, a, b = decode_source_drag(md.data(MEDIA_MIME))
             m = self.project.media.get(mid)
             ti = self.track_at(ev.position().y())
-            if m is not None and ti is not None:
+            g = self.project.multicams.get(mid[3:]) if mid.startswith("mc:") else None
+            if g is not None and ti is not None:
+                t0 = self.snap(self.t_of(ev.position().x()), radius_px=18)
+                self._drop_preview = (ti, t0, self.project.multicam_duration(g))
+                self.update()
+            elif m is not None and ti is not None:
                 t0 = self.snap(self.t_of(ev.position().x()), radius_px=18)
                 full = m.duration if m.kind != "image" else 5.0
                 dur = (b if b is not None else full) - (a or 0.0)
@@ -1173,7 +1202,9 @@ class TimelineWidget(QWidget):
         elif md.hasFormat(MEDIA_MIME):
             mid, a, b = decode_source_drag(md.data(MEDIA_MIME))
             m = self.project.media.get(mid)
-            if m is not None:
+            if mid.startswith("mc:"):
+                self.main.place_multicam(mid[3:], t0, ti)
+            elif m is not None:
                 self.main.place_media(m, t0, ti, a, b)
         ev.acceptProposedAction()
         self.update()

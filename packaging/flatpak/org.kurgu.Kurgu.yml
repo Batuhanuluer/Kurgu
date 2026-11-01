@@ -1,0 +1,45 @@
+# Flatpak paketi (Flathub'a gönderilebilir). GitHub sürümündeki hazır Linux paketini
+# (PyInstaller, tüm kütüphaneler içinde) kullanır; böylece Flatpak içinde Python/Qt
+# derlemek gerekmez.
+#
+# Yeni sürümde URL ve sha256'yı güncellemek için:
+#     python packaging/flatpak/update_manifest.py 0.8.1
+# Yerelde derleyip kurmak:
+#     flatpak-builder --user --install --force-clean build-dir packaging/flatpak/org.kurgu.Kurgu.yml
+app-id: org.kurgu.Kurgu
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: kurgu
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri            # GPU ile çözme/kodlama
+  - --socket=pulseaudio     # ses çalma
+  - --share=network         # güncelleme denetimi, Whisper modeli indirme
+  - --filesystem=home       # medya dosyaları ve projeler
+  - --filesystem=xdg-videos
+  - --filesystem=xdg-music
+  - --filesystem=xdg-pictures
+  - --env=QT_QPA_PLATFORM=wayland;xcb
+modules:
+  - name: kurgu
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/kurgu /app/bin
+      - cp -a Kurgu/. /app/lib/kurgu/
+      - ln -s /app/lib/kurgu/Kurgu /app/bin/kurgu
+      - install -Dm644 org.kurgu.Kurgu.desktop /app/share/applications/org.kurgu.Kurgu.desktop
+      - install -Dm644 Kurgu/kurgu.png /app/share/icons/hicolor/256x256/apps/org.kurgu.Kurgu.png
+      - install -Dm644 org.kurgu.Kurgu.metainfo.xml /app/share/metainfo/org.kurgu.Kurgu.metainfo.xml
+    sources:
+      - type: archive
+        url: https://github.com/Batuhanuluer/Kurgu/releases/download/v0.9.0/Kurgu-0.9.0-linux-x86_64.tar.gz
+        sha256: '0000000000000000000000000000000000000000000000000000000000000000'  # update_manifest.py doldurur
+        strip-components: 0
+        dest: .
+      - type: file
+        path: org.kurgu.Kurgu.desktop
+      - type: file
+        path: ../linux/org.kurgu.Kurgu.metainfo.xml

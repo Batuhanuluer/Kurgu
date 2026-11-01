@@ -23,3 +23,9 @@ pefile==2024.8.26; sys_platform == "win32"
 pywin32-ctypes==0.2.3; sys_platform == "win32"
 colorama==0.4.6; sys_platform == "win32"
 macholib==1.16.4; sys_platform == "darwin"
+# Konuşmadan altyazı (Whisper); alt bağımlılıkları pip çözer
+faster-whisper==1.2.1
+ctranslate2==4.8.4
+onnxruntime==1.29.0
+tokenizers==0.23.3
+huggingface_hub==2.4.0

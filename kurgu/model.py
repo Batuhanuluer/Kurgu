@@ -82,6 +82,14 @@ class Clip:
     text: str = ""
     font_size: int = 72
     color: str = "#ffffff"
+    # Çoklu kamera: mc = grup kimliği; in/out grup zamanındadır, gösterilen kamera mc_angle
+    mc: str = ""
+    mc_angle: int = 0
+    # Karıştırma modu (masks.BLEND_MODES), maskeler ve iz matı
+    blend: str = "normal"
+    masks: list = field(default_factory=list)
+    matte: dict = field(default_factory=dict)  # {"track": iz, "type": alpha|luma, "invert"}
+    audio_fx: list = field(default_factory=list)  # ses efektleri (audio.AUDIO_FX)
     id: str = field(default_factory=new_id)
 
     @property
@@ -116,6 +124,11 @@ class Track:
     name: str = ""
     muted: bool = False  # ses izleri için sessiz, video izleri için gizli
     locked: bool = False
+    captions: bool = False  # altyazı izi (video türünde; klipleri "caption")
+    volume_db: float = 0.0  # ses izi düzeyi (mikser)
+    pan: float = 0.0        # -1 sol .. 1 sağ
+    solo: bool = False
+    style: dict = field(default_factory=dict)  # altyazı izi stili (captions.STYLE_DEFAULTS)
     id: str = field(default_factory=new_id)
 
 
@@ -138,6 +151,13 @@ class Project:
         self.uid = new_id()  # otomatik kayıtları projeyle eşleştirmek için
         self.recovered = False  # otomatik kayıttan açıldıysa
         self.markers: list[float] = []
+        # Çoklu kamera grupları: {kimlik: {"name", "angles": [{"media_id", "offset"}],
+        #                                  "audio": açı_indeksi}}
+        self.multicams: dict[str, dict] = {}
+        # Sekans giriş/çıkış işaretleri (I/O): dışa aktarma aralığı
+        self.seq_in: float | None = None
+        self.seq_out: float | None = None
+        self.master_db = 0.0  # ana çıkış düzeyi
         self.add_track("video")
         self.add_track("video")
         self.add_track("audio")
@@ -242,6 +262,58 @@ class Project:
         self.clips.extend(made)
         return made
 
+    def in_out_range(self) -> tuple[float, float]:
+        """Sekans I/O aralığı (işaret yoksa tüm sekans)."""
+        a = self.seq_in if self.seq_in is not None else 0.0
+        b = self.seq_out if self.seq_out is not None else self.duration
+        if b <= a:
+            return 0.0, self.duration
+        return a, min(b, max(self.duration, b))
+
+    # ------------------------------------------------------------ altyazılar
+    def caption_tracks(self) -> list[int]:
+        return [i for i, t in enumerate(self.tracks) if t.kind == "video" and t.captions]
+
+    def caption_track(self, create: bool = True) -> int | None:
+        ct = self.caption_tracks()
+        if ct:
+            return ct[0]
+        if not create:
+            return None
+        n = len(self.tracks)
+        tr = Track(kind="video", name="CC", captions=True)
+        # Video izlerinin en üstüne (listede son video izinden sonra)
+        vids = self.track_indices("video")
+        pos = (vids[-1] + 1) if vids else 0
+        self.tracks.insert(pos, tr)
+        for c in self.clips:  # araya iz girdi: sonraki izlerin indeksleri kayar
+            if c.track >= pos:
+                c.track += 1
+        return pos if pos < n + 1 else n
+
+    def add_captions(self, cues, track: int | None = None, replace: bool = False) -> list[Clip]:
+        """Altyazı bloklarını ([Cue] ya da (başla, bitir, metin)) altyazı izine ekler."""
+        ti = self.caption_track() if track is None else track
+        if replace:
+            self.clips = [c for c in self.clips if c.track != ti]
+        made = []
+        for cue in cues:
+            a, b, text = (cue.start, cue.end, cue.text) if hasattr(cue, "text") else cue
+            if b - a < 1.0 / self.fps:
+                continue
+            c = Clip(track=ti, start=float(a), in_point=0.0, out_point=float(b - a),
+                     kind="caption", name=text.replace("\n", " ")[:40], text=text)
+            self._clear_space(ti, c.start, c.end)
+            self.clips.append(c)
+            made.append(c)
+        return made
+
+    def caption_cues(self, track: int | None = None):
+        from .captions import Cue
+        tis = [track] if track is not None else self.caption_tracks()
+        return [Cue(c.start, c.end, c.text) for c in sorted(self.clips, key=lambda c: c.start)
+                if c.track in tis and c.kind == "caption"]
+
     def add_text(self, text: str, start: float, track: int | None = None) -> Clip:
         vt = track if track is not None else self.track_indices("video")[-1]
         clip = Clip(track=vt, start=start, in_point=0.0, out_point=TEXT_DEFAULT_DURATION,
@@ -343,8 +415,10 @@ class Project:
             self._clear_space(c.track, c.start, c.end, ignore=ids)
 
     def max_out(self, clip: Clip) -> float:
-        if clip.kind == "text":
+        if clip.kind in ("text", "caption"):
             return 3600.0
+        if clip.mc and clip.mc in self.multicams:
+            return self.multicam_duration(self.multicams[clip.mc])
         m = self.media.get(clip.media_id)
         if m is None or m.kind == "image":
             return 3600.0
@@ -593,6 +667,99 @@ class Project:
             c.start += dt
         return dt
 
+    # ------------------------------------------------------------ çoklu kamera
+    def media_offset(self, clip: Clip) -> float:
+        """Grup zamanı -> medya zamanı farkı (multicam değilse 0)."""
+        if not clip.mc:
+            return 0.0
+        g = self.multicams.get(clip.mc)
+        if not g or not (0 <= clip.mc_angle < len(g["angles"])):
+            return 0.0
+        return float(g["angles"][clip.mc_angle].get("offset", 0.0))
+
+    def multicam_duration(self, g: dict) -> float:
+        end = 0.0
+        for a in g["angles"]:
+            m = self.media.get(a["media_id"])
+            if m is not None:
+                end = max(end, a.get("offset", 0.0) + (m.duration or 0.0))
+        return end
+
+    def create_multicam(self, name: str, media_items, offsets, audio: int = 0) -> str:
+        gid = new_id()
+        self.multicams[gid] = {
+            "name": name, "audio": int(audio),
+            "angles": [{"media_id": m.id, "offset": float(o)}
+                       for m, o in zip(media_items, offsets)]}
+        return gid
+
+    def place_multicam(self, gid: str, start: float, video_track: int | None = None,
+                       audio_track: int | None = None, angle: int = 0,
+                       insert: bool = False) -> list[Clip]:
+        """Grubu zaman çizelgesine koyar: görüntü 'angle' kamerasından, ses grubun ses
+        kamerasından; ikisi bağlı. in/out grup zamanında."""
+        g = self.multicams[gid]
+        dur = self.multicam_duration(g)
+        vt = video_track if video_track is not None else self.track_indices("video")[0]
+        at = audio_track if audio_track is not None else self.track_indices("audio")[0]
+        vm = self.media.get(g["angles"][angle]["media_id"])
+        ai = g.get("audio", 0)
+        am = self.media.get(g["angles"][ai]["media_id"])
+        link = new_id()
+        made = [Clip(track=vt, start=start, in_point=0.0, out_point=dur, media_id=vm.id,
+                     kind="media", name=g["name"], link_id=link, mc=gid, mc_angle=angle)]
+        if am is not None and am.has_audio:
+            made.append(Clip(track=at, start=start, in_point=0.0, out_point=dur,
+                             media_id=am.id, kind="media", name=g["name"], link_id=link,
+                             mc=gid, mc_angle=ai))
+        if insert:
+            self.split_at(start)
+            self._shift_after(start, dur, set())
+        for c in made:
+            self._clear_space(c.track, c.start, c.end)
+            self.clips.append(c)
+        return made
+
+    def multicam_switch(self, clip: Clip, angle: int) -> bool:
+        """Klibin gösterdiği kamerayı değiştir (yalnız görüntü; kesimler yerinde kalır)."""
+        g = self.multicams.get(clip.mc)
+        if not g or not (0 <= angle < len(g["angles"])) or \
+                not self.track_is_video(clip.track):
+            return False
+        clip.mc_angle = angle
+        clip.media_id = g["angles"][angle]["media_id"]
+        return True
+
+    def multicam_clip_at(self, t: float) -> Clip | None:
+        """t anında görünen en üstteki multicam görüntü klibi."""
+        best = None
+        for c in self.clips:
+            if c.mc and self.track_is_video(c.track) and c.contains(t) and \
+                    not self.tracks[c.track].locked:
+                if best is None or c.track > best.track:
+                    best = c
+        return best
+
+    def multicam_cut(self, t: float, angle: int, clip: Clip | None = None) -> Clip | None:
+        """Oynatırken 1-9: t anında keser ve sağdaki parçayı 'angle' kamerasına geçirir.
+        Kesim noktası kare sınırına yuvarlanır; zaten başlangıçtaysa yalnız açı değişir."""
+        c = clip or self.multicam_clip_at(t)
+        if c is None:
+            return None
+        t = round(t * self.fps) / self.fps
+        if c.mc_angle == angle:
+            return c
+        if t - c.start < 0.5 / self.fps:
+            target = c
+        else:
+            # Bağlı ses de aynı noktada bölünür (Premiere'deki gibi: her parça kendi sesiyle)
+            parts = self.split_at(t, [x.id for x in self.linked(c)])
+            target = next((x for x in parts if x.track == c.track), None)
+            if target is None:
+                return None
+        self.multicam_switch(target, angle)
+        return target
+
     def snap_points(self, exclude: Iterable[str] = ()) -> list[float]:
         ex = set(exclude)
         pts = [0.0] + list(self.markers)
@@ -613,6 +780,10 @@ class Project:
             "tracks": [asdict(t) for t in self.tracks],
             "clips": [asdict(c) for c in self.clips],
             "markers": list(self.markers),
+            "multicams": self.multicams,
+            "seq_in": self.seq_in,
+            "master_db": self.master_db,
+            "seq_out": self.seq_out,
         }
 
     @classmethod
@@ -627,6 +798,12 @@ class Project:
             p.media[item.id] = item
         p.clips = [_from_dict(Clip, c) for c in data.get("clips", [])]
         p.markers = list(data.get("markers", []))
+        p.multicams = {k: v for k, v in (data.get("multicams") or {}).items()
+                       if isinstance(v, dict) and isinstance(v.get("angles"), list)}
+        p.master_db = float(data.get("master_db", 0.0) or 0.0)
+        for k in ("seq_in", "seq_out"):
+            v = data.get(k)
+            setattr(p, k, float(v) if isinstance(v, (int, float)) else None)
         p.uid = data.get("uid") or p.uid
         return p
 

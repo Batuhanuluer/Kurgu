@@ -5,7 +5,16 @@ import argparse
 import sys
 
 
+def _streams():
+    """Pencereli paketlerde (PyInstaller --windowed) stdout/stderr yoktur: print çökmesin."""
+    import os
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+
+
 def main(argv=None):
+    _streams()
     ap = argparse.ArgumentParser(prog="kurgu", description="Kurgu video editor")
     ap.add_argument("project", nargs="?", help=".kurgu project file")
     ap.add_argument("--export", metavar="OUTPUT", help="render the project to an MP4 and exit")

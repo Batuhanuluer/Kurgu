@@ -40,13 +40,14 @@ def register(id, name, category, params=(), needs_alpha=False):
 def new_effect(effect_id: str) -> dict:
     d = EFFECTS[effect_id]
     import uuid
+    import copy
     return {"type": effect_id, "enabled": True, "id": uuid.uuid4().hex[:8],
-            "params": {p[0]: p[3] for p in d.params}}
+            "params": {p[0]: copy.deepcopy(p[3]) for p in d.params}}
 
 
 # Kontrastı açan/renk eğrisi uygulayan efektler: 10-bit kaynaklarda yüksek bit derinliğinde
 # okunur ki D-Log gibi düz görüntülerde bantlanma olmasın.
-GRADING = {"lut", "color_match", "levels", "temperature", "hue"}
+GRADING = {"lut", "color_match", "levels", "temperature", "hue", "lumetri"}
 
 
 def is_grading(effects: list) -> bool:
@@ -536,3 +537,25 @@ def lut(arr, p, ctx):
         arr[..., :3] = out
         return arr
     return _mix(arr, out.astype(np.float32), p["amount"])
+
+
+# ------------------------------------------------------------ Lumetri renk
+from . import grading as _gr  # noqa: E402
+
+
+def _lumetri_params():
+    out = []
+    for k, label, lo, hi, d, step in _gr.BASIC:
+        out.append((k, label, "float", d, lo, hi, step, 2 if step < 1 else 0))
+    for k, label in _gr.WHEELS:
+        out.append((k, label, "wheel", [0.0, 0.0], 0, 0, 0, 0))
+        out.append((k + "_luma", label + " Brightness", "float", 0.0, -100.0, 100.0, 1.0, 0))
+    for k in _gr.CURVES:
+        out.append((k, k, "curve", [list(pt) for pt in _gr.IDENTITY_CURVE], 0, 0, 0, 0))
+    return out
+
+
+@register("lumetri", "Lumetri Color", "Color Correction", _lumetri_params())
+def lumetri(arr, p, ctx):
+    """Temel düzeltme + eğriler + renk tekerlekleri (Renk panelinden düzenlenir)."""
+    return _gr.apply(arr, p, None if ctx.get("hibit") else _dither(arr.shape[:2]))

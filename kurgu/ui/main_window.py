@@ -9,7 +9,8 @@ from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QImage, QKeyS
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDockWidget,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QInputDialog,
                                QMainWindow, QMessageBox, QProgressDialog, QSpinBox, QLineEdit,
-                               QPushButton, QHBoxLayout, QWidget, QSplitter, QApplication)
+                               QPushButton, QHBoxLayout, QWidget, QSplitter, QApplication,
+                               QLabel)
 
 from .. import __version__
 from ..i18n import _
@@ -35,30 +36,79 @@ class ExportWorker(QThread):
     progress = Signal(int)
     finished_ok = Signal(bool, str)
 
-    def __init__(self, project: Project, path: str, w: int, h: int, crf: int):
+    def __init__(self, project: Project, path: str, opts: dict):
         super().__init__()
         self.project = Project.from_dict(project.to_dict())  # iş parçacığına kopya
-        self.path, self.w, self.h, self.crf = path, w, h, crf
+        self.path, self.opts = path, opts
         self.cancel = False
 
     def run(self):
+        from ..exporter import export_media
         try:
-            ok = export(self.project, self.path, self.w, self.h, self.crf,
-                        progress=lambda f: self.progress.emit(int(f * 1000)),
-                        cancelled=lambda: self.cancel)
-            if not ok and os.path.exists(self.path):
-                os.remove(self.path)
+            ok = export_media(self.project, self.path,
+                              progress=lambda f: self.progress.emit(int(f * 1000)),
+                              cancelled=lambda: self.cancel, **self.opts)
             self.finished_ok.emit(ok, "" if ok else "cancelled")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
+            if os.path.exists(self.path):
+                try:
+                    os.remove(self.path)
+                except OSError:
+                    pass
             self.finished_ok.emit(False, str(e))
 
 
 class ExportDialog(QDialog):
-    def __init__(self, parent, project: Project, default_path: str):
+    """Premiere "Dışa Aktar": hazır ayar, biçim, boyut, kalite, aralık."""
+
+    def __init__(self, parent, project: Project, default_path: str, settings=None):
+        from .. import exporter as ex
         super().__init__(parent)
+        self.ex = ex
         self.setWindowTitle(_("Export Video"))
+        self.setMinimumWidth(520)
         self.project = project
+        self.settings = settings
         form = QFormLayout(self)
+        self.preset = QComboBox()
+        for pr in ex.PRESETS:
+            if ex.available(ex.FORMATS[pr.fmt]):
+                self.preset.addItem(_(pr.name), pr.key)
+        self.preset.addItem(_("Custom"), "custom")
+        form.addRow(_("Preset"), self.preset)
+        self.fmt = QComboBox()
+        for f in ex.FORMATS.values():
+            if ex.available(f):
+                self.fmt.addItem(_(f.name), f.key)
+        form.addRow(_("Format"), self.fmt)
+        self.size = QComboBox()
+        pw, ph = project.width, project.height
+        self.sizes = [(None, None, _("Match sequence") + f" ({pw} × {ph})")]
+        for w, h in ((3840, 2160), (2560, 1440), (1920, 1080), (1280, 720), (1080, 1920),
+                     (1080, 1350), (1080, 1080), (854, 480), (480, None)):
+            label = f"{w} × {h}" if h else f"{w} px " + _("wide")
+            self.sizes.append((w, h, label))
+        for _w, _h, label in self.sizes:
+            self.size.addItem(label)
+        form.addRow(_("Resolution"), self.size)
+        self.quality = QComboBox()
+        for k, label in (("high", _("High")), ("medium", _("Medium")), ("small", _("Small file"))):
+            self.quality.addItem(label, k)
+        form.addRow(_("Quality"), self.quality)
+        self.range = QComboBox()
+        self.range.addItem(_("Entire sequence"), "all")
+        if project.seq_in is not None or project.seq_out is not None:
+            a, b = project.in_out_range()
+            from .timeline import timecode
+            self.range.addItem(_("Sequence In/Out") + f"  ({timecode(a, project.fps)} – "
+                               f"{timecode(b, project.fps)})", "io")
+            self.range.setCurrentIndex(1)
+        form.addRow(_("Range"), self.range)
+        from PySide6.QtWidgets import QCheckBox
+        self.gpu = QCheckBox(_("Use GPU encoder (faster)"))
+        self.gpu.setChecked(bool(settings.value("export_gpu", True, type=bool)) if settings
+                            else True)
+        form.addRow(self.gpu)
         self.path = QLineEdit(default_path)
         browse = QPushButton("…")
         browse.clicked.connect(self._browse)
@@ -68,33 +118,93 @@ class ExportDialog(QDialog):
         rl.addWidget(self.path, 1)
         rl.addWidget(browse)
         form.addRow(_("File"), row)
-        self.res = QComboBox()
-        pw, ph = project.width, project.height
-        self.res_options = [(pw, ph)]
-        for h in (2160, 1440, 1080, 720, 480):
-            if h < ph:
-                self.res_options.append((int(pw * h / ph) // 2 * 2, h))
-        for w, h in self.res_options:
-            self.res.addItem(f"{w} × {h}")
-        form.addRow(_("Resolution"), self.res)
-        self.quality = QComboBox()
-        self.quality.addItems([_("High"), _("Medium"), _("Small file")])
-        form.addRow(_("Quality"), self.quality)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        self.summary.setStyleSheet("color:#9aa0a6;")
+        form.addRow(self.summary)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(_("Export"))
+        bb.button(QDialogButtonBox.Cancel).setText(_("Cancel"))
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         form.addRow(bb)
+        self._applying = False
+        self.preset.currentIndexChanged.connect(self._preset_changed)
+        for w in (self.fmt, self.size, self.quality, self.range):
+            w.currentIndexChanged.connect(self._custom)
+        last = settings.value("export_preset", "match") if settings else "match"
+        self.preset.setCurrentIndex(max(0, self.preset.findData(last)))
+        self._preset_changed()
+
+    def _preset_changed(self, *_a):
+        key = self.preset.currentData()
+        pr = next((p for p in self.ex.PRESETS if p.key == key), None)
+        if pr is None:
+            return
+        self._applying = True
+        self.fmt.setCurrentIndex(max(0, self.fmt.findData(pr.fmt)))
+        idx = next((i for i, (w, h, _l) in enumerate(self.sizes)
+                    if (w, h) == (pr.width, pr.height)), 0)
+        self.size.setCurrentIndex(idx)
+        self.quality.setCurrentIndex(max(0, self.quality.findData(pr.quality)))
+        self._applying = False
+        self._update()
+
+    def _custom(self, *_a):
+        if not self._applying:
+            self.preset.blockSignals(True)
+            self.preset.setCurrentIndex(self.preset.findData("custom"))
+            self.preset.blockSignals(False)
+        self._update()
+
+    def _update(self):
+        f = self.ex.FORMATS[self.fmt.currentData()]
+        base, _e = os.path.splitext(self.path.text())
+        self.path.setText(base + "." + f.ext)
+        o = self.values()[1]
+        w, h = self.ex.target_size(self.project, None, o["width"], o["height"])
+        a, b = (o["start"], o["end"])
+        from .timeline import timecode
+        txt = f"{_(f.name)} · {w} × {h} · {timecode(b - a, self.project.fps)}"
+        if f.deep:
+            txt += " · " + _("10-bit color pipeline")
+        if (w / h > 0) and abs(w / h - self.project.width / self.project.height) > 0.01 \
+                and f.vcodec:
+            txt += "\n" + _("Aspect ratio differs from the sequence: black bars are added. "
+                            "For a vertical video, set the sequence to 9:16 instead.")
+        self.summary.setText(txt)
+        quality_ok = f.crf
+        self.quality.setEnabled(quality_ok or f.key == "mp3")
+        from .. import hw
+        enc = hw.hw_encoder(f.key) if f.key in ("h264", "hevc") else None
+        self.gpu.setVisible(enc is not None)
+        if enc:
+            self.gpu.setToolTip(enc)
+        self.size.setEnabled(f.vcodec is not None)
 
     def _browse(self):
+        f = self.ex.FORMATS[self.fmt.currentData()]
         p, _f = QFileDialog.getSaveFileName(self, _("Export Video"), self.path.text(),
-                                            "MP4 (*.mp4)")
+                                            f"{_(f.name)} (*.{f.ext})")
         if p:
-            self.path.setText(p if p.lower().endswith(".mp4") else p + ".mp4")
+            self.path.setText(p if p.lower().endswith("." + f.ext) else p + "." + f.ext)
 
     def values(self):
-        w, h = self.res_options[self.res.currentIndex()]
-        crf = (18, 23, 28)[self.quality.currentIndex()]
-        return self.path.text(), w, h, crf
+        w, h, _l = self.sizes[self.size.currentIndex()]
+        f = self.ex.FORMATS[self.fmt.currentData()]
+        pr = next((p for p in self.ex.PRESETS if p.key == self.preset.currentData()), None)
+        if self.range.currentData() == "io":
+            start, end = self.project.in_out_range()
+        else:
+            start, end = 0.0, self.project.duration
+        if self.settings is not None:
+            self.settings.setValue("export_preset", self.preset.currentData())
+            self.settings.setValue("export_gpu", self.gpu.isChecked())
+        return self.path.text(), {
+            "hardware": self.gpu.isChecked() and self.gpu.isVisible(),
+            "fmt_key": f.key, "width": w, "height": h, "quality": self.quality.currentData(),
+            "start": start, "end": end,
+            "max_fps": pr.max_fps if pr else (15 if f.key == "gif" else None)}
 
 
 class SettingsDialog(QDialog):
@@ -148,7 +258,13 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("Kurgu", "Kurgu")
         # Render önbelleği ve arka plan işçisi
         self.version = 0
-        self.cache = FrameCache()
+        from .. import autosave as _as
+        from .. import hw as _hw
+        _hw.MODE = str(self.settings.value("hw_decode", "auto"))
+        disk_gb = float(self.settings.value("render_disk_gb", 10))
+        self.cache = FrameCache(int(self.settings.value("cache_mb", 1024)),
+                                os.path.join(_as.APP_DIR, "render") if disk_gb > 0 else None,
+                                int(disk_gb * 1024))
         self.worker = RenderWorker(self.cache)
         self._sig = None
         self._sig_ver = -1
@@ -175,7 +291,7 @@ class MainWindow(QMainWindow):
         self.monitors.setStretchFactor(0, 1)
         self.monitors.setStretchFactor(1, 1)
         self.monitors.setChildrenCollapsible(True)
-        self.monitors.setSizes([1, 1])
+        self.monitors.setHandleWidth(4)
         self.bin = MediaBin(self)
         self.inspector = Inspector(self)
         self.setCentralWidget(self.monitors)
@@ -188,8 +304,35 @@ class MainWindow(QMainWindow):
         bin_dock.raise_()
         self.clipboard: list = []
         self.color_ref = None  # "Renk referansı olarak kullan" ile kopyalanan palet
-        self._dock(_("Inspector"), self.inspector, Qt.RightDockWidgetArea)
+        self.inspector_dock = self._dock(_("Inspector"), self.inspector, Qt.RightDockWidgetArea)
         self.inspector.setMinimumWidth(380)
+        from .color_panel import ColorPanel
+        from .scopes import ScopesPanel
+        self.color_panel = ColorPanel(self)
+        self.color_dock = self._dock(_("Lumetri Color"), self.color_panel, Qt.RightDockWidgetArea)
+        self.tabifyDockWidget(self.inspector_dock, self.color_dock)
+        self.inspector_dock.raise_()
+        self._inspector_stale = False
+        self.inspector_dock.visibilityChanged.connect(self._inspector_shown)
+        self.color_dock.visibilityChanged.connect(
+            lambda vis: vis and self.color_panel.refresh())
+        from .captions_panel import CaptionsPanel
+        self.captions_panel = CaptionsPanel(self)
+        self.captions_dock = self._dock(_("Captions"), self.captions_panel,
+                                        Qt.RightDockWidgetArea)
+        self.tabifyDockWidget(self.color_dock, self.captions_dock)
+        self.captions_dock.visibilityChanged.connect(
+            lambda vis: vis and self.captions_panel.refresh())
+        self.inspector_dock.raise_()
+        self.scopes = ScopesPanel(self)
+        self.scopes_dock = self._dock(_("Lumetri Scopes"), self.scopes, Qt.LeftDockWidgetArea)
+        self.tabifyDockWidget(fx_dock, self.scopes_dock)
+        from .mixer import MixerPanel
+        self.mixer = MixerPanel(self)
+        self.mixer_dock = self._dock(_("Audio Track Mixer"), self.mixer, Qt.LeftDockWidgetArea)
+        self.tabifyDockWidget(self.scopes_dock, self.mixer_dock)
+        self.mixer_dock.visibilityChanged.connect(lambda vis: vis and self.mixer.rebuild())
+        bin_dock.raise_()
         self.bin.setMinimumWidth(240)
         tl_dock = self._dock(_("Timeline"), self.timeline_panel, Qt.BottomDockWidgetArea)
         self.resizeDocks([tl_dock], [340], Qt.Vertical)
@@ -233,6 +376,21 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(_("Ready"))
         self.monitor.refresh(0.0)
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not getattr(self, "_monitors_sized", False):
+            self._monitors_sized = True
+            from PySide6.QtCore import QTimer
+
+            def even():  # iki monitör eşit genişlikte açılsın (kayıtlı düzen yoksa)
+                saved = self.settings.value("monitor_split")
+                if saved:
+                    self.monitors.restoreState(saved)
+                else:
+                    w = self.monitors.width()
+                    self.monitors.setSizes([w // 2, w - w // 2])
+            QTimer.singleShot(0, even)
+
     # ------------------------------------------------------------ kurulum
     def _dock(self, title, widget, area):
         d = QDockWidget(title, self)
@@ -265,6 +423,7 @@ class MainWindow(QMainWindow):
         f.addSeparator()
         self._act(f, _("Import Media…"), self.import_dialog, "Ctrl+I")
         self._act(f, _("Export…"), self.export_dialog, "Ctrl+M")
+        self._act(f, _("Export Frame…"), self.export_frame, "Ctrl+Shift+E")
         f.addSeparator()
         am = f.addMenu(_("Auto Save"))
         grp = QActionGroup(self)
@@ -295,11 +454,15 @@ class MainWindow(QMainWindow):
         self._act(e, _("Paste Attributes"), self.paste_attributes, "Ctrl+Alt+V")
         self._act(e, _("Duplicate"), self.duplicate_selected, "Ctrl+Shift+D")
         self._act(e, _("Select All"), self.select_all, QKeySequence.SelectAll)
+        e.addSeparator()
+        self._act(e, _("Preferences…"), self.preferences, "Ctrl+,")
 
         s = mb.addMenu(_("Sequence"))
         self._act(s, _("Add Title"), self.add_title, "Ctrl+T")
         self._act(s, _("Add Marker"), self.add_marker, "M")
         self._act(s, _("Apply Default Transition"), self.apply_default_transition, "Ctrl+D")
+        s.addSeparator()
+        self._act(s, _("Normalize Loudness…"), self.normalize_dialog)
         s.addSeparator()
         self._act(s, _("Render Effects") + "\tEnter", self.render_effects)
         self._act(s, _("Delete Render Files"), self.clear_render_cache)
@@ -330,6 +493,15 @@ class MainWindow(QMainWindow):
         snap = self._act(v, _("Snapping"), self.toggle_snap, "S", True)
         snap.setChecked(True)
         v.addSeparator()
+        self._act(v, _("Lumetri Color"), lambda: self.show_dock(self.color_dock), "Shift+6")
+        self._act(v, _("Lumetri Scopes"), lambda: self.show_dock(self.scopes_dock), "Shift+7")
+        self._act(v, _("Color Workspace"), self.color_workspace)
+        self._act(v, _("Captions"), lambda: self.show_dock(self.captions_dock))
+        self._act(v, _("Audio Track Mixer"), lambda: self.show_dock(self.mixer_dock), "Shift+9")
+        self.mc_view_action = self._act(v, _("Multi-Camera View"),
+                                        lambda on: self.toggle_multicam_view(on), "Shift+0",
+                                        checkable=True)
+        v.addSeparator()
         self._act(v, _("Zoom In"), lambda: self.timeline.zoom(1.4), ["=", "+"])
         self._act(v, _("Zoom Out"), lambda: self.timeline.zoom(1 / 1.4), "-")
         self._act(v, _("Zoom to Fit"), self.timeline.zoom_fit, "\\")
@@ -359,6 +531,9 @@ class MainWindow(QMainWindow):
         self._act(None, "mark-out", self.mark_out, "O")
         self._act(None, "clear-io", self.clear_marks, "Ctrl+Shift+X")
         self._act(None, "insert", lambda: self.source.edit("insert"), ",")
+        self._act(None, "esc", self.monitor.cancel_pen, "Escape")
+        for n in range(1, 10):  # çoklu kamera: 1-9 ile kameraya kes
+            self._act(None, f"cam{n}", lambda _c=False, k=n - 1: self.multicam_key(k), str(n))
         self._act(None, "overwrite", lambda: self.source.edit("overwrite"), ".")
         self._act(None, "up", lambda: self.jump_edit(-1), "Up")
         self._act(None, "nudge-1", lambda: self.nudge_selected(-1), "Alt+Left")
@@ -388,6 +563,12 @@ class MainWindow(QMainWindow):
 
     def on_edited(self, refresh_inspector=True):
         self.version += 1
+        cp = getattr(self, "captions_panel", None)
+        if cp is not None and cp.isVisible():
+            cp.refresh()
+        mx = getattr(self, "mixer", None)
+        if mx is not None and mx.isVisible():
+            mx.rebuild()
         ids = {c.id for c in self.project.clips}
         self.timeline.selected &= ids
         self.timeline.update()
@@ -413,21 +594,45 @@ class MainWindow(QMainWindow):
         sel = self.selected_clips()
         video = [c for c in sel if self.project.track_is_video(c.track)]
         self.inspector.set_clip((video or sel or [None])[0])
+        self.color_panel.set_clip((video or [None])[0])
 
     def _on_play_position(self, t):
         self.timeline.set_playhead(t, emit=False)
         self.timeline.ensure_visible(t)
         self.monitor.refresh(t)
         self.inspector.sync_time(t)
+        self.color_panel.sync_time(t)
 
     def _on_scrub(self, t):
         self.inspector.sync_time(t)
+        self.color_panel.sync_time(t)
         if self.player.playing:
             rate = self.player.rate
             self.player.pause()
             self.player.play(rate)
         else:
             self.monitor.refresh(t)
+
+    def _inspector_shown(self, vis):
+        if vis and self._inspector_stale:
+            self._inspector_stale = False
+            self._on_selection()
+
+    def show_dock(self, dock):
+        dock.show()
+        dock.raise_()
+
+    def color_workspace(self):
+        """Renk çalışma alanı: Lumetri Renk ve Skoplar öne gelir."""
+        self.show_dock(self.color_dock)
+        self.show_dock(self.scopes_dock)
+
+    def current_frame_array(self):
+        """Program monitöründeki karenin RGB dizisi (otomatik renk vb. için)."""
+        from .scopes import qimage_to_rgb
+        if self.monitor.view.image is None:
+            self.monitor.refresh(self.timeline.playhead)
+        return qimage_to_rgb(self.monitor.view.image, 640)
 
     def set_tool(self, tool):
         from .timeline import TOOLS
@@ -457,7 +662,7 @@ class MainWindow(QMainWindow):
         w = QApplication.focusWidget()
         while w is not None:
             if w is self.source:
-                return self.source.media is not None
+                return self.source.media is not None and not self.source.mc_mode
             w = w.parentWidget()
         return False
 
@@ -553,16 +758,38 @@ class MainWindow(QMainWindow):
         self.source.load(m)
 
     def mark_in(self):
+        """I: kaynak monitörü odaktaysa kaynağın, değilse sekansın giriş işareti."""
         if self.source_active():
             self.source.mark_in()
+            return
+        p = self.project
+        t = round(self.timeline.playhead * p.fps) / p.fps
+        self.before_edit()
+        p.seq_in = t
+        if p.seq_out is not None and p.seq_out <= t:
+            p.seq_out = None
+        self.on_edited(refresh_inspector=False)
 
     def mark_out(self):
         if self.source_active():
             self.source.mark_out()
+            return
+        p = self.project
+        t = max(round(self.timeline.playhead * p.fps) / p.fps, 1 / p.fps)
+        self.before_edit()
+        p.seq_out = t
+        if p.seq_in is not None and p.seq_in >= t:
+            p.seq_in = None
+        self.on_edited(refresh_inspector=False)
 
     def clear_marks(self):
         if self.source_active():
             self.source.clear_marks()
+            return
+        if self.project.seq_in is not None or self.project.seq_out is not None:
+            self.before_edit()
+            self.project.seq_in = self.project.seq_out = None
+            self.on_edited(refresh_inspector=False)
 
     def source_edit(self, m: MediaItem, a, b, mode="overwrite"):
         """Kaynak monitöründeki işaretli parçayı oynatma kafasına koy (Ekle , / Üzerine Yaz .)."""
@@ -609,6 +836,410 @@ class MainWindow(QMainWindow):
         made = p.place_media(m, t, vt, at, in_point, out_point)
         self.timeline.selected = {c.id for c in made}
         self.on_edited()
+
+    # ------------------------------------------------------------ çoklu kamera
+    def create_multicam_dialog(self, items):
+        """Premiere "Çoklu Kamera Kaynak Sekansı Oluştur": kameraları sesten eşitle."""
+        from PySide6.QtWidgets import QCheckBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Create Multi-Camera Source Sequence"))
+        form = QFormLayout(dlg)
+        name = QLineEdit(_("Multicam") + f" {len(self.project.multicams) + 1}")
+        form.addRow(_("Name"), name)
+        sync = QComboBox()
+        sync.addItem(_("Audio (automatic)"), "audio")
+        sync.addItem(_("Clip start"), "start")
+        form.addRow(_("Synchronize by"), sync)
+        audio = QComboBox()
+        for i, m in enumerate(items):
+            audio.addItem(f"{i + 1}: {m.name}", i)
+        form.addRow(_("Audio from camera"), audio)
+        order = QLabel("\n".join(f"{i + 1}. {m.name}" for i, m in enumerate(items)))
+        order.setTextFormat(Qt.PlainText)
+        form.addRow(_("Cameras"), order)
+        place = QCheckBox(_("Add to timeline at playhead"))
+        place.setChecked(True)
+        form.addRow(place)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if not dlg.exec():
+            return None
+        offsets, conf = [0.0] * len(items), [1.0] * len(items)
+        if sync.currentData() == "audio":
+            res = self._run_sync([m.path for m in items])
+            if res is None:
+                return None
+            offsets, conf = res
+        self.before_edit()
+        gid = self.project.create_multicam(name.text().strip() or _("Multicam"), items,
+                                           offsets, audio.currentData())
+        self.bin.rebuild()
+        if place.isChecked():
+            self.place_multicam(gid, self.timeline.playhead, push=False)
+        else:
+            self.on_edited()
+        weak = [items[i].name for i, c in enumerate(conf) if c < 0.15]
+        msg = _("Multi-camera sequence created") + ": " + ", ".join(
+            f"{i + 1}: {o:+.3f}s" for i, o in enumerate(offsets))
+        self.statusBar().showMessage(msg, 8000)
+        if weak:
+            self._plain_box(QMessageBox.Warning, _("Synchronize by"),
+                            _("These cameras could not be matched reliably by audio; check "
+                              "their sync:") + "\n" + "\n".join(weak))
+        return gid
+
+    def _run_sync(self, paths):
+        import threading
+        from .. import multicam as mcm
+        dlg = QProgressDialog(_("Synchronizing cameras by audio…"), _("Cancel"), 0, 100, self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(300)
+        box = {"res": None, "err": None, "p": 0.0}
+
+        def work():
+            try:
+                box["res"] = mcm.sync_by_audio(paths, progress=lambda f: box.__setitem__("p", f))
+            except Exception as e:  # noqa: BLE001
+                box["err"] = str(e)
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        while th.is_alive():
+            th.join(0.05)
+            dlg.setValue(int(box["p"] * 100))
+            QApplication.processEvents()
+            if dlg.wasCanceled():
+                return None
+        dlg.close()
+        if box["err"]:
+            self._plain_box(QMessageBox.Warning, "Kurgu", box["err"])
+            return None
+        return box["res"]
+
+    def place_multicam(self, gid, t, track_hint=None, push=True):
+        p = self.project
+        if gid not in p.multicams:
+            return
+        vt = track_hint if (track_hint is not None and p.track_is_video(track_hint)
+                            and not p.tracks[track_hint].locked) else None
+        if push:
+            self.before_edit()
+        g = p.multicams[gid]
+        first = not any(p.track_is_video(c.track) for c in p.clips)
+        m0 = p.media.get(g["angles"][0]["media_id"])
+        if first and m0 is not None and self._mismatch(m0):
+            self._ask_match_sequence(m0)
+        made = p.place_multicam(gid, t, vt)
+        self.timeline.selected = {c.id for c in made}
+        self.on_edited()
+
+    def rename_multicam(self, gid):
+        g = self.project.multicams.get(gid)
+        if not g:
+            return
+        text, ok = QInputDialog.getText(self, _("Rename…"), _("Name"), text=g["name"])
+        if ok and text.strip():
+            self.before_edit()
+            g["name"] = text.strip()
+            for c in self.project.clips:
+                if c.mc == gid:
+                    c.name = g["name"]
+            self.bin.rebuild()
+            self.on_edited()
+
+    def remove_multicams(self, gids):
+        self.before_edit()
+        gids = set(gids)
+        self.project.clips = [c for c in self.project.clips if c.mc not in gids]
+        for g in gids:
+            self.project.multicams.pop(g, None)
+        self.bin.rebuild()
+        self.on_edited()
+
+    def multicam_key(self, angle: int):
+        """1-9: oynatma kafasında (oynarken de) o kameraya kes."""
+        p = self.project
+        t = self.player.now() if self.player.playing else self.timeline.playhead
+        c = p.multicam_clip_at(t)
+        if c is None:
+            self.statusBar().showMessage(_("No multi-camera clip at the playhead"), 3000)
+            return
+        g = p.multicams.get(c.mc)
+        if not g or angle >= len(g["angles"]):
+            return
+        self.before_edit()
+        p.multicam_cut(t, angle, c)
+        self.on_edited(refresh_inspector=False)
+        self.source.mc_flash(angle)
+        self.statusBar().showMessage(_("Camera") + f" {angle + 1}", 1500)
+
+    def toggle_multicam_view(self, on=None):
+        on = (not self.source.mc_mode) if on is None else bool(on)
+        self.source.set_multicam_mode(on)
+        if hasattr(self, "mc_view_action"):
+            self.mc_view_action.setChecked(on)
+
+    # ------------------------------------------------------------ ses
+    def normalize_dialog(self, target=None, auto_accept=False):
+        """Seçili (yoksa tüm) ses kliplerinin ses yüksekliğini hedefe eşitle."""
+        from .. import audio as au
+        from ..media import SourcePool
+        from ..render import Compositor
+        p = self.project
+        sel = [c for c in self.selected_clips() if not p.track_is_video(c.track)]
+        clips = sel or [c for c in p.clips if not p.track_is_video(c.track)
+                        and p.media.get(c.media_id) is not None]
+        if not clips:
+            self._plain_box(QMessageBox.Information, _("Normalize Loudness…"),
+                            _("Select audio clips first."))
+            return None
+        if target is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle(_("Normalize Loudness…").rstrip("…"))
+            form = QFormLayout(dlg)
+            combo = QComboBox()
+            for v, name in au.LOUDNESS_TARGETS:
+                combo.addItem(_(name), v)
+            form.addRow(_("Target"), combo)
+            info = QLabel(_("{n} clips").format(n=len(clips)) + (
+                "" if sel else " (" + _("all audio clips") + ")"))
+            form.addRow(info)
+            bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            bb.accepted.connect(dlg.accept)
+            bb.rejected.connect(dlg.reject)
+            form.addRow(bb)
+            if not auto_accept and not dlg.exec():
+                return None
+            target = combo.currentData()
+        peak_mode = target > -5
+        comp = Compositor(p, SourcePool(p.sample_rate))
+        report = []
+        self.before_edit()
+        try:
+            for c in clips:
+                if kf.is_animated(c, "volume"):
+                    report.append(f"{c.name}: " + _("skipped (volume is keyframed)"))
+                    continue
+                m = p.media.get(c.media_id)
+                src = comp.pool.audio_source(m) if m else None
+                if src is None:
+                    continue
+                n = int(c.duration * p.sample_rate)
+                data = comp._clip_samples(c, src, c.start, n)
+                if c.audio_fx:
+                    data = au.process(data, c.audio_fx, p.sample_rate)
+                g = au.normalize_gain(data, p.sample_rate, target, peak_mode)
+                vol = min(max(g, 0.0), 4.0)
+                for x in p.linked(c):
+                    if not p.track_is_video(x.track):
+                        x.volume = round(vol, 4)
+                lu = au.integrated_loudness(data * vol, p.sample_rate)
+                report.append(f"{c.name}: {au.lin2db(vol):+.1f} dB → "
+                              + (f"{lu:.1f} LUFS" if lu > -100 else "—"))
+        finally:
+            comp.pool.close()
+        self.on_edited()
+        self.statusBar().showMessage(_("Loudness normalized") + f": {len(report)}", 5000)
+        return report
+
+    # ------------------------------------------------------------ altyazılar
+    def add_caption(self):
+        p = self.project
+        t = round(self.timeline.playhead * p.fps) / p.fps
+        self.before_edit()
+        made = p.add_captions([(t, t + 3.0, _("New caption"))])
+        self.timeline.selected = {c.id for c in made}
+        self.timeline.setMinimumHeight(self.timeline.content_height())
+        self.on_edited()
+        self.show_dock(self.captions_dock)
+
+    def edit_caption(self, clip):
+        text, ok = QInputDialog.getMultiLineText(self, _("Captions"), _("Caption text:"),
+                                                 clip.text)
+        if ok:
+            self.before_edit()
+            clip.text = text
+            clip.name = text.replace("\n", " ")[:40]
+            self.on_edited()
+
+    def import_captions(self):
+        from .. import captions as cap
+        last = self.settings.value("last_dir", os.path.expanduser("~"))
+        path, _f = QFileDialog.getOpenFileName(self, _("Import Captions"), last,
+                                               _("Subtitles") + " (*.srt *.vtt)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as f:
+                cues = cap.parse_srt(f.read())
+        except OSError as e:
+            self._plain_box(QMessageBox.Warning, "Kurgu", str(e))
+            return
+        if not cues:
+            self._plain_box(QMessageBox.Warning, _("Import Captions"),
+                            _("No captions found in this file."))
+            return
+        self.before_edit()
+        self.project.add_captions(cues)
+        self.timeline.setMinimumHeight(self.timeline.content_height())
+        self.on_edited()
+        self.show_dock(self.captions_dock)
+        self.statusBar().showMessage(_("{n} captions").format(n=len(cues)), 4000)
+
+    def export_captions(self):
+        from .. import captions as cap
+        cues = self.project.caption_cues()
+        if not cues:
+            self._plain_box(QMessageBox.Information, _("Export Captions"),
+                            _("There are no captions to export."))
+            return
+        base = os.path.splitext(self.project.path)[0] if self.project.path else \
+            os.path.join(self.settings.value("last_dir", os.path.expanduser("~")), "captions")
+        path, flt = QFileDialog.getSaveFileName(self, _("Export Captions"), base + ".srt",
+                                                "SubRip (*.srt);;WebVTT (*.vtt)")
+        if not path:
+            return
+        vtt = path.lower().endswith(".vtt") or "vtt" in flt.lower()
+        if not path.lower().endswith((".srt", ".vtt")):
+            path += ".vtt" if vtt else ".srt"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(cap.format_vtt(cues) if vtt else cap.format_srt(cues))
+        self.statusBar().showMessage(_("Saved to") + " " + path, 5000)
+
+    def _ensure_whisper(self) -> bool:
+        from .. import captions as cap
+        if cap.have_whisper():
+            return True
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            self._plain_box(QMessageBox.Warning, _("Captions"),
+                            _("Speech recognition is not included in this build. Please "
+                              "install the latest Kurgu release."))
+            return False
+        r = QMessageBox.question(
+            self, _("Captions"),
+            _("Speech recognition needs the free 'faster-whisper' package (about 100 MB). "
+              "Install it now?"))
+        if r != QMessageBox.Yes:
+            return False
+        import subprocess
+        import threading
+        dlg = QProgressDialog(_("Installing faster-whisper…"), None, 0, 0, self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        box = {}
+
+        def work():
+            box["r"] = subprocess.run([_sys.executable, "-m", "pip", "install",
+                                       "faster-whisper"], capture_output=True, text=True)
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        while th.is_alive():
+            th.join(0.05)
+            QApplication.processEvents()
+        dlg.close()
+        import importlib
+        importlib.invalidate_caches()
+        if box["r"].returncode != 0 or not cap.have_whisper():
+            self._plain_box(QMessageBox.Warning, _("Captions"),
+                            (box["r"].stderr or box["r"].stdout)[-1500:])
+            return False
+        return True
+
+    def transcribe_dialog(self, engine=None, auto_accept=False):
+        """Konuşmadan altyazı (Premiere "Metin → Transkript → Altyazı oluştur")."""
+        from PySide6.QtWidgets import QCheckBox
+        from .. import captions as cap
+        p = self.project
+        if p.duration <= 0:
+            self._plain_box(QMessageBox.Information, _("Captions"), _("The timeline is empty."))
+            return None
+        if engine is None and not self._ensure_whisper():
+            return None
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Transcribe Speech to Captions"))
+        form = QFormLayout(dlg)
+        lang = QComboBox()
+        for code, name in cap.LANGUAGES:
+            lang.addItem(_(name), code)
+        lang.setCurrentIndex(max(0, lang.findData(self.settings.value("asr_lang", ""))))
+        form.addRow(_("Language"), lang)
+        model = QComboBox()
+        for m in cap.MODEL_SIZES:
+            model.addItem(m, m)
+        model.setCurrentIndex(max(0, model.findData(self.settings.value("asr_model", "small"))))
+        model.setToolTip(_("Larger models are more accurate but slower; the model is "
+                           "downloaded once on first use."))
+        form.addRow(_("Model"), model)
+        chars = QSpinBox()
+        chars.setRange(16, 80)
+        chars.setValue(int(self.settings.value("asr_chars", 42)))
+        form.addRow(_("Max characters per line"), chars)
+        lines = QSpinBox()
+        lines.setRange(1, 3)
+        lines.setValue(2)
+        form.addRow(_("Lines"), lines)
+        replace = QCheckBox(_("Replace existing captions"))
+        replace.setChecked(True)
+        form.addRow(replace)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if not auto_accept and not dlg.exec():
+            return None
+        for k, w in (("asr_lang", lang), ("asr_model", model)):
+            self.settings.setValue(k, w.currentData())
+        self.settings.setValue("asr_chars", chars.value())
+        snap = Project.from_dict(p.to_dict())
+        prog = QProgressDialog(_("Preparing audio…"), _("Cancel"), 0, 1000, self)
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(0)
+        import threading
+        box = {"p": 0.0, "stage": "audio", "res": None, "err": None}
+        cancelled = prog.wasCanceled
+
+        def work():
+            try:
+                audio = cap.sequence_audio(snap, 0.0, snap.duration,
+                                           progress=lambda f: box.__setitem__("p", 0.15 * f),
+                                           cancelled=cancelled)
+                box["stage"] = "asr"
+                segs, language = cap.transcribe(
+                    audio, lang.currentData(), model.currentData(),
+                    progress=lambda f: box.__setitem__("p", 0.15 + 0.85 * f),
+                    cancelled=cancelled, engine=engine)
+                box["res"] = (cap.segments_to_cues(segs, chars.value(), lines.value()), language)
+            except Exception as e:  # noqa: BLE001
+                box["err"] = str(e)
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        while th.is_alive():
+            th.join(0.05)
+            prog.setValue(int(box["p"] * 1000))
+            if box["stage"] == "asr":
+                prog.setLabelText(_("Recognizing speech… (the model is downloaded on first "
+                                    "use)"))
+            QApplication.processEvents()
+        prog.close()
+        if box["err"]:
+            if box["err"] != "cancelled":
+                self._plain_box(QMessageBox.Warning, _("Captions"), box["err"])
+            return None
+        cues, language = box["res"]
+        if not cues:
+            self._plain_box(QMessageBox.Information, _("Captions"), _("No speech was found."))
+            return []
+        self.before_edit()
+        made = p.add_captions(cues, replace=replace.isChecked() and
+                              p.caption_track(create=False) is not None)
+        self.timeline.setMinimumHeight(self.timeline.content_height())
+        self.on_edited()
+        self.show_dock(self.captions_dock)
+        self.statusBar().showMessage(
+            _("{n} captions").format(n=len(made)) + (f" · {language}" if language else ""), 6000)
+        return made
 
     # ------------------------------------------------------------ sekans / klip boyutu
     def _mismatch(self, m) -> bool:
@@ -852,6 +1483,12 @@ class MainWindow(QMainWindow):
             kf.set_static(clip, prop, value)
         self.on_edited(refresh_inspector=False)
         self.inspector.sync_time(self.timeline.playhead)
+        if prop.startswith("fx."):
+            # Denetçi ile Lumetri paneli aynı değerleri gösterir; diğeri sekme değişince tazelenir
+            if self.color_panel.clip is clip and not self.color_panel.isVisible():
+                self.color_panel.refresh()
+            if not self.inspector.isVisible():
+                self._inspector_stale = True
 
     @staticmethod
     def _prop_group(prop):
@@ -1208,7 +1845,10 @@ class MainWindow(QMainWindow):
         if not frames:
             self.statusBar().showMessage(_("Nothing to render: all effect sections are ready"), 4000)
             return
-        cap = int(self.cache.budget * 0.85 // self.cache.frame_bytes(w, h))
+        if self.cache.disk_dir:  # kalıcı render dosyaları: sınır disk bütçesi (JPEG ~0,4 B/px)
+            cap = int(self.cache.disk_budget * 0.8 // max(w * h * 0.4, 1))
+        else:
+            cap = int(self.cache.budget * 0.85 // self.cache.frame_bytes(w, h))
         if len(frames) > cap:
             start = int(self.timeline.playhead * fps)
             frames = sorted(frames, key=lambda f: (f < start, f))[:cap]
@@ -1228,6 +1868,7 @@ class MainWindow(QMainWindow):
         dlg.setMinimumDuration(0)
         bridge.prog.connect(lambda i, n: dlg.setValue(i))
         jid = self.worker.submit(self.snapshot(), frames, w, h, use_proxy=self.use_proxy,
+                                 persist=True,
                                  progress=lambda i, n: bridge.prog.emit(i, n),
                                  done=lambda ok: bridge.fin.emit(ok))
         dlg.canceled.connect(self.worker.cancel)
@@ -1242,7 +1883,7 @@ class MainWindow(QMainWindow):
         self._render_bridge = (bridge, jid)
 
     def clear_render_cache(self):
-        self.cache.clear()
+        self.cache.clear(disk=True)
         self._render_status = (None, [])
         self.timeline.update()
         self.statusBar().showMessage(_("Render files deleted"), 3000)
@@ -1646,17 +2287,17 @@ class MainWindow(QMainWindow):
         base = (os.path.splitext(self.project.path)[0] if self.project.path
                 else os.path.join(self.settings.value("last_dir", os.path.expanduser("~")),
                                   "video"))
-        dlg = ExportDialog(self, self.project, base + ".mp4")
+        dlg = ExportDialog(self, self.project, base + ".mp4", self.settings)
         if not dlg.exec():
             return
-        path, w, h, crf = dlg.values()
+        path, opts = dlg.values()
         if not path:
             return
         progress = QProgressDialog(_("Exporting…"), _("Cancel"), 0, 1000, self)
         progress.setWindowTitle(_("Export Video"))
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
-        worker = ExportWorker(self.project, path, w, h, crf)
+        worker = ExportWorker(self.project, path, opts)
         worker.progress.connect(progress.setValue)
         progress.canceled.connect(lambda: setattr(worker, "cancel", True))
 
@@ -1677,6 +2318,73 @@ class MainWindow(QMainWindow):
         worker.finished_ok.connect(done)
         self._export_worker = worker
         worker.start()
+
+    def preferences(self):
+        """Tercihler: önbellek, render dosyaları, donanım hızlandırma."""
+        from .. import hw
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_("Preferences…").rstrip("…"))
+        form = QFormLayout(dlg)
+        mem = QSpinBox()
+        mem.setRange(256, 65536)
+        mem.setSingleStep(256)
+        mem.setSuffix(" MB")
+        mem.setValue(int(self.settings.value("cache_mb", 1024)))
+        form.addRow(_("Preview memory cache"), mem)
+        disk = QDoubleSpinBox()
+        disk.setRange(0, 2000)
+        disk.setSuffix(" GB")
+        disk.setValue(float(self.settings.value("render_disk_gb", 10)))
+        disk.setToolTip(_("Rendered previews are kept on disk so they survive restarts. "
+                          "0 = off."))
+        form.addRow(_("Render files on disk"), disk)
+        dec = QComboBox()
+        dec.addItem(_("Automatic (GPU if available)"), "auto")
+        dec.addItem(_("Off (CPU only)"), "off")
+        dec.setCurrentIndex(max(0, dec.findData(self.settings.value("hw_decode", "auto"))))
+        form.addRow(_("Hardware decoding"), dec)
+        info = hw.summary()
+        lines = [_("GPU decoders") + ": " + (", ".join(info["decoders"]) or _("none")),
+                 "H.264 " + _("GPU encoder") + ": " + (info["h264"] or _("none")),
+                 "H.265 " + _("GPU encoder") + ": " + (info["hevc"] or _("none"))]
+        lab = QLabel("\n".join(lines))
+        lab.setStyleSheet("color:#9aa0a6;")
+        form.addRow(lab)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if not dlg.exec():
+            return
+        self.settings.setValue("cache_mb", mem.value())
+        self.settings.setValue("render_disk_gb", disk.value())
+        self.settings.setValue("hw_decode", dec.currentData())
+        self.cache.budget = mem.value() * 1024 * 1024
+        self.cache.disk_budget = int(disk.value() * 1024 * 1024 * 1024)
+        hw.MODE = dec.currentData()
+        self.monitor.reset()
+        self.worker.reset_sources()
+
+    def export_frame(self):
+        """Program monitöründeki kareyi PNG/JPEG olarak kaydet."""
+        from ..exporter import export_frame
+        from .timeline import timecode
+        p = self.project
+        tc = timecode(self.timeline.playhead, p.fps).replace(":", "-")
+        base = (os.path.splitext(p.path)[0] if p.path else os.path.join(
+            self.settings.value("last_dir", os.path.expanduser("~")), "frame"))
+        path, _f = QFileDialog.getSaveFileName(self, _("Export Frame"), f"{base}_{tc}.png",
+                                               "PNG (*.png);;JPEG (*.jpg)")
+        if not path:
+            return
+        if not path.lower().endswith((".png", ".jpg", ".jpeg")):
+            path += ".png"
+        try:
+            export_frame(p, self.timeline.playhead, path)
+        except OSError as e:
+            self._plain_box(QMessageBox.Warning, _("Export Frame"), str(e))
+            return
+        self.statusBar().showMessage(_("Saved to") + " " + path, 5000)
 
     # ------------------------------------------------------------ yardım
     def show_shortcuts(self):
@@ -1741,4 +2449,5 @@ class MainWindow(QMainWindow):
         self.autosave_timer.stop()
         self.session.end()  # düzgün kapanış: çökme kurtarma önerilmesin
         self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("monitor_split", self.monitors.saveState())
         ev.accept()

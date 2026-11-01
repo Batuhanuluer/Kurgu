@@ -6,6 +6,7 @@ alfa karıştırma C++ tarafında yapıldığı için Python'da bile hızlıdır
 from __future__ import annotations
 
 import math
+import os
 import time
 from typing import Callable
 
@@ -68,10 +69,29 @@ def adjust_color(arr: np.ndarray, clip: Clip) -> np.ndarray:
     return out
 
 
+def adjust_color16(arr: np.ndarray, clip: Clip) -> np.ndarray:
+    """adjust_color'ın 16 bit karşılığı (10-bit dışa aktarma yolu)."""
+    if clip.brightness == 0 and clip.contrast == 1 and clip.saturation == 1:
+        return arr
+    rgb = arr[..., :3].astype(np.float32) * (255.0 / 65535.0)
+    if clip.contrast != 1 or clip.brightness != 0:
+        rgb = (rgb - 128.0) * clip.contrast + 128.0 + clip.brightness * 255.0
+    if clip.saturation != 1:
+        gray = rgb @ np.array([0.299, 0.587, 0.114], np.float32)
+        rgb = gray[..., None] + (rgb - gray[..., None]) * clip.saturation
+    arr[..., :3] = np.clip(rgb * (65535.0 / 255.0) + 0.5, 0, 65535).astype(np.uint16)
+    return arr
+
+
+DEEP_EFFECTS = {"lumetri"}  # 16 bit yolda doğrudan uygulanabilen efektler
+
+
 class Compositor:
-    def __init__(self, project: Project, pool: SourcePool | None = None):
+    def __init__(self, project: Project, pool: SourcePool | None = None, deep: bool = False):
         self.project = project
         self.pool = pool or SourcePool(project.sample_rate)
+        # deep: 16 bit/kanal birleştirme (10-bit dışa aktarma); önizleme 8 bit kalır
+        self.deep = deep
         self.disabled_effect = None  # damlalık için geçici olarak kapatılan efekt
 
     # ------------------------------------------------------------ görüntü
@@ -105,7 +125,7 @@ class Compositor:
 
     def compose(self, t: float, out_w: int, out_h: int) -> QImage:
         p = self.project
-        img = QImage(out_w, out_h, QImage.Format_RGB32)
+        img = QImage(out_w, out_h, QImage.Format_RGBX64 if self.deep else QImage.Format_RGB32)
         img.fill(QColor(0, 0, 0))
         painter = QPainter(img)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -129,7 +149,8 @@ class Compositor:
         return img
 
     def render_layer(self, clip: Clip, t: float, w: int, h: int) -> QImage:
-        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img = QImage(w, h, QImage.Format_RGBA64_Premultiplied if self.deep
+                     else QImage.Format_ARGB32_Premultiplied)
         img.fill(Qt.transparent)
         q = QPainter(img)
         q.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -138,7 +159,53 @@ class Compositor:
         q.end()
         return img
 
+    def track_layer(self, track: int, t: float, w: int, h: int) -> QImage:
+        """Tek bir izin t anındaki görüntüsü (saydam zemin): iz matı için."""
+        img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+        img.fill(Qt.transparent)
+        st = self.track_state(track, t) if 0 <= track < len(self.project.tracks) else None
+        if st is not None:
+            q = QPainter(img)
+            q.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            q.setRenderHint(QPainter.Antialiasing, True)
+            if st[0] == "clip":
+                self.draw_clip(q, st[1], t, w, h)
+            else:
+                _k, a, b, prog, kind = st
+                la = self.render_layer(a, t, w, h) if a is not None else None
+                lb = self.render_layer(b, t, w, h) if b is not None else None
+                transitions.draw(q, kind, la, lb, prog, w, h)
+            q.end()
+        return img
+
     def draw_clip(self, painter: QPainter, clip: Clip, t: float, out_w: int, out_h: int):
+        if clip.kind == "caption":
+            self._draw_caption(painter, clip, out_w, out_h)
+            return
+        mt = clip.matte or {}
+        if mt.get("track", -1) is not None and mt.get("track", -1) >= 0 \
+                and mt.get("track") != clip.track and not getattr(self, "_matte_busy", False):
+            # İz matı: klibi ve mat izini ayrı katmanlarda çiz, matın alfası/parlaklığıyla kes
+            from . import masks as mk
+            self._matte_busy = True
+            try:
+                layer = QImage(out_w, out_h, QImage.Format_ARGB32_Premultiplied)
+                layer.fill(Qt.transparent)
+                q = QPainter(layer)
+                q.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                q.setRenderHint(QPainter.Antialiasing, True)
+                self.draw_clip(q, Clip(**{**clip.__dict__, "blend": "normal"}), t, out_w, out_h)
+                q.end()
+                matte = self.track_layer(int(mt["track"]), t, out_w, out_h)
+                alpha = mk.matte_alpha(matte, mt.get("type", "alpha"), bool(mt.get("invert")))
+                layer = mk.apply_alpha_to_layer(layer, alpha)
+            finally:
+                self._matte_busy = False
+            painter.save()
+            painter.setCompositionMode(mk.composition_mode(clip.blend))
+            painter.drawImage(QRectF(0, 0, out_w, out_h), layer)
+            painter.restore()
+            return
         clip = kf.animated(clip, t)  # anahtar karelerden o anki değerler
         k = out_w / self.project.width  # proje pikselinden çıktı pikseline
         tt = min(max(t, clip.start), clip.end - 1e-6)  # geçiş uzantısında solma sabit
@@ -146,6 +213,9 @@ class Compositor:
         if alpha <= 0.001:
             return
         painter.save()
+        if clip.blend and clip.blend != "normal":
+            from .masks import composition_mode
+            painter.setCompositionMode(composition_mode(clip.blend))
         painter.setOpacity(min(alpha, 1.0))
         painter.translate(out_w / 2 + clip.pos_x * k, out_h / 2 + clip.pos_y * k)
         if clip.rotation:
@@ -165,6 +235,10 @@ class Compositor:
         if src is None:
             return
         st = clip.source_time(t)
+        if clip.mc:  # çoklu kamera: grup zamanı -> bu kameranın zamanı; görüntü yoksa siyah
+            st -= p.media_offset(clip)
+            if st < -1e-3 or st > media.duration + 1e-3:
+                return
         if media.kind != "image":  # geçiş uzantısında kaynak dışına taşma: kareyi dondur
             st = min(max(st, 0.0), max(media.duration - 0.5 / max(media.fps, 1), 0.0))
         frame = src.frame_at(st)
@@ -181,7 +255,32 @@ class Compositor:
         effects = [e for e in clip.effects
                    if dis is None or (e is not dis and (not e.get("id")
                                                         or e.get("id") != dis.get("id")))]
-        has_alpha = frame.format.name.startswith(ALPHA_FORMATS) or fx.needs_alpha(effects)
+        src_alpha = frame.format.name.startswith(ALPHA_FORMATS) or fx.needs_alpha(effects)
+        masked = bool(clip.masks) and any(m.get("enabled", True) for m in clip.masks)
+        has_alpha = src_alpha or masked
+        px = tw / max(fw * fit * clip.scale, 1e-6)  # dizi pikseli / proje pikseli
+        if self.deep and not src_alpha and all(
+                e["type"] in DEEP_EFFECTS or not e.get("enabled", True) for e in effects):
+            # 16 bit yol: kaynak 10-bit ise ara tonlar kaybolmadan kodlayıcıya ulaşır
+            a16 = oriented_array(frame, tw, th, "rgb48le", rot)
+            out = np.empty((th, tw, 4), np.uint16)
+            out[..., :3] = a16
+            out[..., 3] = 65535
+            out = adjust_color16(out, clip)
+            for e in effects:
+                if e.get("enabled", True) and e["type"] == "lumetri":
+                    params = {pp[0]: pp[3] for pp in fx.EFFECTS["lumetri"].params}
+                    params.update(e.get("params", {}))
+                    from . import grading
+                    out = grading.apply16(out, params)
+            if masked:
+                from .masks import mask_alpha
+                ma = mask_alpha(clip.masks, tw, th, px)
+                out[..., 3] = (ma * 65535 + 0.5).astype(np.uint16)
+            out = np.ascontiguousarray(out)
+            qimg = QImage(out.data, tw, th, out.strides[0], QImage.Format_RGBA64)
+            painter.drawImage(QRectF(-dw / 2, -dh / 2, dw, dh), qimg)
+            return
         fmt = "rgba" if has_alpha else "rgb24"
         hibit = bool(effects) and fx.is_grading(effects) and high_bit(frame)
         if hibit:
@@ -193,6 +292,12 @@ class Compositor:
             # dizi pikseli / proje pikseli: efekt boyutları önizleme ve çıktıda aynı görünsün
             scale = tw / max(fw * fit * clip.scale, 1e-6)
             arr = fx.apply_effects(arr, effects, {"scale": scale, "t": t, "hibit": hibit})
+        if masked:
+            from .masks import mask_alpha
+            ma = mask_alpha(clip.masks, tw, th, px)
+            if arr.shape[2] == 3:
+                arr = np.concatenate([arr, np.full(arr.shape[:2] + (1,), 255, np.uint8)], -1)
+            arr[..., 3] = (arr[..., 3].astype(np.float32) * ma + 0.5).astype(np.uint8)
         arr = np.ascontiguousarray(arr)
         qfmt = QImage.Format_RGBA8888 if has_alpha else QImage.Format_RGB888
         qimg = QImage(arr.data, tw, th, arr.strides[0], qfmt)
@@ -220,6 +325,57 @@ class Compositor:
         painter.setBrush(QColor(clip.color))
         painter.drawPath(path)
 
+    def _draw_caption(self, painter: QPainter, clip: Clip, out_w: int, out_h: int):
+        """Altyazı: iz stilinde, kare altında ortalı, gerekirse satırlara sarılmış."""
+        from .captions import style_of
+        from PySide6.QtGui import QFontMetricsF
+        tr = self.project.tracks[clip.track] if clip.track < len(self.project.tracks) else None
+        st = style_of(tr)
+        font = QFont()
+        font.setPixelSize(max(6, int(st["size"] * out_h)))
+        font.setBold(bool(st["bold"]))
+        fm = QFontMetricsF(font)
+        maxw = st["width"] * out_w
+        lines = []
+        for para in (clip.text or "").split("\n"):  # uzun satırları kelimeden sar
+            cur = ""
+            for w in para.split():
+                cand = (cur + " " + w).strip()
+                if cur and fm.horizontalAdvance(cand) > maxw:
+                    lines.append(cur)
+                    cur = w
+                else:
+                    cur = cand
+            lines.append(cur)
+        lines = [ln for ln in lines if ln] or [""]
+        lh = fm.height()
+        bottom = st["y"] * out_h
+        top = bottom - lh * len(lines)
+        pad_x, pad_y = lh * 0.35, lh * 0.08
+        painter.save()
+        for i, line in enumerate(lines):
+            w = fm.horizontalAdvance(line)
+            x = (out_w - w) / 2
+            y = top + i * lh
+            if st["box"]:
+                bc = QColor(st["box_color"])
+                bc.setAlphaF(min(max(float(st["box_opacity"]), 0.0), 1.0))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(bc)
+                painter.drawRoundedRect(QRectF(x - pad_x, y - pad_y, w + 2 * pad_x,
+                                               lh + 2 * pad_y), lh * 0.15, lh * 0.15)
+            path = QPainterPath()
+            path.addText(QPointF(x, y + fm.ascent()), font, line)
+            if st["outline"]:
+                painter.setPen(QPen(QColor(0, 0, 0, 220), max(1.0, font.pixelSize() / 14),
+                                    Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawPath(path)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(st["color"]))
+            painter.drawPath(path)
+        painter.restore()
+
     # ------------------------------------------------------------ ses
     def clip_audio_span(self, c: Clip):
         """Geçiş uzantıları dahil klibin duyulduğu aralık ve kazanç zarfı bilgisi."""
@@ -237,15 +393,38 @@ class Compositor:
         tout = p.trans_out_info(c) if tnx is None else None
         return lo, hi, tin, tnx, tout
 
+    def _clip_samples(self, c: Clip, src, s: float, count: int) -> np.ndarray:
+        """Klibin zaman çizelgesi s anından itibaren count örneği (hız dahil)."""
+        sr = self.project.sample_rate
+        st = c.source_time(s) - self.project.media_offset(c)
+        if abs(c.speed - 1.0) < 1e-6:
+            return src.read(st, count)
+        m = int(math.ceil(count * c.speed)) + 1
+        raw = src.read(st, m)
+        xs = np.linspace(0, (count - 1) * c.speed, count) if count > 1 else np.zeros(1)
+        idx = np.arange(m)
+        _ = sr
+        return np.stack([np.interp(xs, idx, raw[:, 0]),
+                         np.interp(xs, idx, raw[:, 1])], axis=1).astype(np.float32)
+
     def mix(self, t: float, n: int) -> np.ndarray:
-        """t anından itibaren n örneklik stereo miks (n, 2) float32."""
+        """t anından itibaren n örneklik stereo miks (n, 2) float32.
+        İz düzeyi/pan/solo, klip ses efektleri ve ana çıkış düzeyi uygulanır; son ölçümler
+        (tepe değerleri) self.levels içinde: {iz: (L, R), "master": (L, R)}."""
+        from . import audio as au
         p = self.project
         sr = p.sample_rate
         out = np.zeros((n, 2), np.float32)
         t1 = t + n / sr
-        for ti in p.track_indices("audio"):
-            if p.tracks[ti].muted:
+        levels = {}
+        tracks = p.track_indices("audio")
+        solo = [ti for ti in tracks if getattr(p.tracks[ti], "solo", False)]
+        for ti in tracks:
+            tr = p.tracks[ti]
+            if tr.muted or (solo and ti not in solo):
+                levels[ti] = (0.0, 0.0)
                 continue
+            bus = np.zeros((n, 2), np.float32)
             for c in p.clips:
                 if c.track != ti or (c.volume <= 0 and not kf.is_animated(c, "volume")):
                     continue
@@ -264,16 +443,13 @@ class Compositor:
                 count = min(n - i0, int(round((s1 - s0) * sr)))
                 if count <= 0:
                     continue
-                st = c.source_time(s0)
-                if abs(c.speed - 1.0) < 1e-6:
-                    data = src.read(st, count)
+                fxl = [e for e in (c.audio_fx or []) if e.get("enabled", True)]
+                if fxl:
+                    pre, post = au.padding(fxl, sr)
+                    raw = self._clip_samples(c, src, s0 - pre / sr, pre + count + post)
+                    data = au.process(raw, fxl, sr)[pre:pre + count]
                 else:
-                    m = int(math.ceil(count * c.speed)) + 1
-                    raw = src.read(st, m)
-                    xs = np.linspace(0, m - 1, count)
-                    idx = np.arange(m)
-                    data = np.stack([np.interp(xs, idx, raw[:, 0]),
-                                     np.interp(xs, idx, raw[:, 1])], axis=1).astype(np.float32)
+                    data = self._clip_samples(c, src, s0, count)
                 times = s0 + np.arange(count, dtype=np.float64) / sr
                 if kf.is_animated(c, "volume"):
                     src_t = c.in_point + (times - c.start) * c.speed
@@ -296,7 +472,16 @@ class Compositor:
                 elif tout is not None:
                     q = np.clip((times - tout[0]) / tout[1], 0, 1)
                     gain *= np.cos(q * math.pi / 2).astype(np.float32)
-                out[i0:i0 + count] += data * gain[:, None]
+                bus[i0:i0 + count] += data[:count] * gain[:len(data[:count]), None]
+            g = au.db2lin(getattr(tr, "volume_db", 0.0))
+            gl, gr = au.pan_gains(getattr(tr, "pan", 0.0))
+            bus[:, 0] *= g * gl
+            bus[:, 1] *= g * gr
+            levels[ti] = (float(np.abs(bus[:, 0]).max()), float(np.abs(bus[:, 1]).max()))
+            out += bus
+        out *= au.db2lin(getattr(p, "master_db", 0.0))
+        levels["master"] = (float(np.abs(out[:, 0]).max()), float(np.abs(out[:, 1]).max()))
+        self.levels = levels
         np.clip(out, -1.0, 1.0, out=out)
         return out
 
@@ -321,64 +506,14 @@ def pick_video_codec() -> str:
 def export(project: Project, path: str, width: int | None = None, height: int | None = None,
            quality: int = 20, start: float = 0.0, end: float | None = None,
            progress: Callable[[float], None] | None = None,
-           cancelled: Callable[[], bool] | None = None) -> bool:
-    """Projeyi MP4 (H.264 + AAC) olarak dışa aktarır. İptal edilirse False döner."""
-    ensure_gui_app()
-    w = (width or project.width) // 2 * 2
-    h = (height or project.height) // 2 * 2
-    end = project.duration if end is None else end
-    fps = project.fps
-    sr = project.sample_rate
-    total_frames = max(1, int(round((end - start) * fps)))
-    comp = Compositor(project, SourcePool(sr))
-    from fractions import Fraction
-    rate = Fraction(fps).limit_denominator(1001)
-    out = av.open(path, "w")
-    try:
-        codec = pick_video_codec()
-        vs = out.add_stream(codec, rate=rate)
-        vs.width, vs.height, vs.pix_fmt = w, h, "yuv420p"
-        if codec == "libx264":
-            vs.options = {"crf": str(quality), "preset": "veryfast"}
-        else:
-            vs.bit_rate = int(w * h * fps * 0.12)
-        ast = out.add_stream("aac", rate=sr)
-        ast.layout = "stereo"
-        ast.bit_rate = 192000
-        samples_done = 0
-        chunk = 1024
-        t0 = time.time()
-        for i in range(total_frames):
-            if cancelled and cancelled():
-                return False
-            t = start + i / fps
-            rgb = qimage_to_rgb(comp.compose(t, w, h))
-            vf = av.VideoFrame.from_ndarray(rgb, format="rgb24")
-            vf.pts = i
-            for pkt in vs.encode(vf):
-                out.mux(pkt)
-            target = int(round((i + 1) / fps * sr))
-            while samples_done + chunk <= target or (i == total_frames - 1
-                                                    and samples_done < target):
-                n = min(chunk, max(target - samples_done, 0)) if i == total_frames - 1 else chunk
-                if n <= 0:
-                    break
-                pcm = comp.mix(start + samples_done / sr, n)
-                af = av.AudioFrame.from_ndarray(np.ascontiguousarray(pcm.T), format="fltp",
-                                                layout="stereo")
-                af.sample_rate = sr
-                af.pts = samples_done
-                for pkt in ast.encode(af):
-                    out.mux(pkt)
-                samples_done += n
-            if progress and (i % 5 == 0 or i == total_frames - 1):
-                progress((i + 1) / total_frames)
-        for pkt in vs.encode():
-            out.mux(pkt)
-        for pkt in ast.encode():
-            out.mux(pkt)
-        _ = t0
-        return True
-    finally:
-        out.close()
-        comp.pool.close()
+           cancelled: Callable[[], bool] | None = None, fmt: str | None = None) -> bool:
+    """Projeyi dışa aktarır (varsayılan MP4 · H.264 + AAC). İptal edilirse False döner.
+    Biçimler ve hazır ayarlar için kurgu.exporter."""
+    from .exporter import export_media
+    q = "high" if quality <= 20 else "medium" if quality <= 25 else "small"
+    if fmt is None:
+        ext = os.path.splitext(path)[1].lower()
+        fmt = {".mov": "prores", ".webm": "vp9", ".gif": "gif", ".mp3": "mp3",
+               ".wav": "wav"}.get(ext, "h264")
+    return export_media(project, path, fmt, width, height, q, start, end, progress=progress,
+                        cancelled=cancelled)

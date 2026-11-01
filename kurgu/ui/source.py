@@ -6,16 +6,17 @@ zaman çizelgesine sürükle. İşaretler medya başına hatırlanır.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QMimeData, QObject, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QDrag, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QSizePolicy, QStyle, QToolButton,
-                               QVBoxLayout, QWidget)
+import numpy as np
+from PySide6.QtCore import QMimeData, QObject, Qt, Signal
+from PySide6.QtGui import QColor, QDrag, QPainter
+from PySide6.QtWidgets import QLabel, QSizePolicy, QStyle, QWidget
 
 from ..i18n import _
 from ..media import SourcePool
 from ..model import Project
 from ..render import Compositor
-from .player import PREVIEW_MAX_W, Player, VideoView
+from .player import (PREVIEW_MAX_W, MonitorFrame, Player, ScrubBar, VideoView,
+                     glyph_icon, monitor_button)
 from .timeline import MEDIA_MIME, encode_source_drag, timecode
 
 
@@ -43,11 +44,16 @@ class _SourceView(VideoView):
         self._press = None
 
     def mousePressEvent(self, ev):
+        if self.mon.mc_mode:  # çoklu kamera ızgarası: tıklanan kameraya kes
+            i = self.mon.mc_cell_at(ev.position())
+            if i is not None:
+                self.mon.main.multicam_key(i)
+            return
         self._press = ev.position()
         self.mon.setFocus()
 
     def mouseMoveEvent(self, ev):
-        if self._press is None or self.mon.media is None:
+        if self._press is None or self.mon.media is None or self.mon.mc_mode:
             return
         if (ev.position() - self._press).manhattanLength() < 8:
             return
@@ -67,59 +73,12 @@ class _SourceView(VideoView):
 
     def paintEvent(self, ev):
         super().paintEvent(ev)
-        if self.mon.media is None:
+        if self.mon.media is None and not self.mon.mc_mode:
             p = QPainter(self)
             p.setPen(QColor("#80868b"))
             p.drawText(self.rect().adjusted(20, 20, -20, -20),
                        Qt.AlignCenter | Qt.TextWordWrap, self.mon.hint)
             p.end()
-
-
-class _Bar(QWidget):
-    """Kaynak zaman çubuğu: oynatma kafası ve I/O aralığı; tıkla/sürükle ile gez."""
-
-    def __init__(self, mon):
-        super().__init__()
-        self.mon = mon
-        self.setFixedHeight(22)
-        self.setMouseTracking(True)
-
-    def _t(self, x):
-        d = self.mon.duration()
-        return min(max((x - 6) / max(self.width() - 12, 1) * d, 0.0), d)
-
-    def mousePressEvent(self, ev):
-        self.mon.setFocus()
-        self.mon.seek(self._t(ev.position().x()))
-
-    def mouseMoveEvent(self, ev):
-        if ev.buttons() & Qt.LeftButton:
-            self.mon.seek(self._t(ev.position().x()))
-
-    def paintEvent(self, ev):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        p.fillRect(self.rect(), QColor("#1b1d21"))
-        d = max(self.mon.duration(), 1e-6)
-        x_of = lambda t: 6 + (w - 12) * t / d  # noqa: E731
-        p.fillRect(QRectF(6, h / 2 - 2, w - 12, 4), QColor("#3a3f47"))
-        a, b = self.mon.marks()
-        if a is not None or b is not None:
-            xa, xb = x_of(a or 0.0), x_of(b if b is not None else d)
-            p.fillRect(QRectF(xa, 3, max(xb - xa, 1), h - 6), QColor(79, 140, 255, 90))
-            p.setPen(QPen(QColor("#4f8cff"), 2))
-            if a is not None:
-                p.drawLine(QPointF(xa, 2), QPointF(xa, h - 2))
-            if b is not None:
-                p.drawLine(QPointF(xb, 2), QPointF(xb, h - 2))
-        x = x_of(self.mon.clock.playhead)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#4fc3f7"))
-        p.drawPolygon(QPolygonF([QPointF(x - 5, 2), QPointF(x + 5, 2), QPointF(x, 9)]))
-        p.setPen(QPen(QColor("#4fc3f7"), 1))
-        p.drawLine(QPointF(x, 8), QPointF(x, h - 2))
-        p.end()
 
 
 class SourceMonitor(QWidget):
@@ -137,68 +96,173 @@ class SourceMonitor(QWidget):
         self.hint = _("Double-click a clip in the Project panel to open it here")
         self.view = _SourceView(self)
         self.title = QLabel(_("Source: (none)"))
-        self.title.setStyleSheet("color:#9aa0a6; padding:2px 4px;")
-        self.title.setTextFormat(Qt.PlainText)
-        self.bar = _Bar(self)
+        self.bar = ScrubBar(self.duration, lambda: self.clock.playhead, self.seek, self.marks,
+                            on_press=self.setFocus)
         self.tc = QLabel("00:00:00:00")
-        self.tc.setStyleSheet("color:#4fc3f7; font-family: monospace; font-size: 14px;")
-        self.inout = QLabel("")
-        self.inout.setStyleSheet("color:#9aa0a6; font-family: monospace;")
-        st = self.style()
-
-        def btn(text, tip, slot, icon=None):
-            b = QToolButton()
-            if icon is not None:
-                b.setIcon(st.standardIcon(icon))
-            else:
-                b.setText(text)
-            b.setToolTip(tip)
-            b.setAutoRaise(True)
-            b.clicked.connect(slot)
-            return b
-        self.play_btn = btn("", _("Play / Pause") + " (Space)", self.player.toggle,
-                            QStyle.SP_MediaPlay)
-        info = QHBoxLayout()
-        info.addWidget(self.tc)
-        info.addStretch(1)
-        info.addWidget(self.inout)
-        row = QHBoxLayout()
-        row.setSpacing(2)
-        row.addStretch(1)
-        row.addWidget(btn("{", _("Mark In") + " (I)", self.mark_in))
-        row.addWidget(btn("}", _("Mark Out") + " (O)", self.mark_out))
-        row.addSpacing(6)
-        row.addWidget(btn("", _("Previous Frame"), lambda: self.step(-1),
-                          QStyle.SP_MediaSeekBackward))
-        row.addWidget(self.play_btn)
-        row.addWidget(btn("", _("Next Frame"), lambda: self.step(1), QStyle.SP_MediaSeekForward))
-        row.addSpacing(10)
-        ins = btn(_("Insert"), _("Insert at playhead, push later clips") + " (,)",
-                  lambda: self.edit("insert"))
-        ovr = btn(_("Overwrite"), _("Overwrite at playhead") + " (.)",
-                  lambda: self.edit("overwrite"))
-        for b in (ins, ovr):
-            b.setStyleSheet("QToolButton { padding:2px 8px; border:1px solid #3a3f47; "
-                            "border-radius:4px; }")
-            b.setMinimumWidth(b.sizeHint().width())
-        row.addWidget(ins)
-        row.addWidget(ovr)
-        row.addStretch(1)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.setSpacing(3)
-        lay.addWidget(self.title)
-        lay.addWidget(self.view, 1)
-        lay.addWidget(self.bar)
-        lay.addLayout(info)
-        lay.addLayout(row)
+        self.inout = QLabel("00:00:00:00")
+        mb = lambda tip, slot, icon=None, text=None: monitor_button(  # noqa: E731
+            self, tip, slot, icon, text)
+        self.play_btn = mb(_("Play / Pause") + " (Space)", self.player.toggle,
+                           QStyle.SP_MediaPlay)
+        MonitorFrame(self, self.view, self.bar, self.title, self.tc, [
+            mb(_("Mark In") + " (I)", self.mark_in, text="{"),
+            mb(_("Mark Out") + " (O)", self.mark_out, text="}"),
+            None,
+            mb(_("Previous Frame"), lambda: self.step(-1), QStyle.SP_MediaSeekBackward),
+            self.play_btn,
+            mb(_("Next Frame"), lambda: self.step(1), QStyle.SP_MediaSeekForward),
+            None,
+            mb(_("Insert at playhead, push later clips") + " (,)",
+               lambda: self.edit("insert"), text=_("Insert")),
+            mb(_("Overwrite at playhead") + " (.)",
+               lambda: self.edit("overwrite"), text=_("Overwrite")),
+        ], self.inout)
         self.player.position.connect(self._show)
         self.player.state_changed.connect(self._on_state)
         self.clock.moved.connect(self._show)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Çoklu kamera görünümü (Premiere'deki multicam monitörü)
+        self.mc_mode = False
+        self.mc_pool = None
+        self.mc_cells: list = []
+        self._mc_flash = None
+        from PySide6.QtCore import QTimer
+        self._mc_flash_timer = QTimer(self)
+        self._mc_flash_timer.setSingleShot(True)
+        self._mc_flash_timer.timeout.connect(self._mc_unflash)
+        main.player.position.connect(self._mc_follow)
+        main.timeline.playhead_changed.connect(self._mc_follow)
+
+    # ------------------------------------------------------------ çoklu kamera
+    def set_multicam_mode(self, on: bool):
+        self.mc_mode = on
+        self.player.pause()
+        if on:
+            if self.mc_pool is None:
+                self.mc_pool = SourcePool(use_proxy=self.main.use_proxy)
+            self.mc_render(self.main.timeline.playhead)
+        else:
+            if self.mc_pool is not None:
+                self.mc_pool.close()
+                self.mc_pool = None
+            self.mc_cells = []
+            if self.media is not None:
+                self.load(self.media)
+            else:
+                self.view.image = None
+                self.title.setText(_("Source: (none)"))
+                self.view.update()
+
+    def _mc_follow(self, t):
+        if self.mc_mode:
+            self.mc_render(t)
+
+    def mc_flash(self, angle):
+        if self.mc_mode:
+            self._mc_flash = angle
+            self._mc_flash_timer.start(350)
+            self.mc_render(self.main.player.now() if self.main.player.playing
+                           else self.main.timeline.playhead)
+
+    def _mc_unflash(self):
+        self._mc_flash = None
+        if self.mc_mode:
+            self.mc_render(self.main.timeline.playhead)
+
+    def mc_cell_at(self, pos):
+        r = self.view.target_rect()
+        if not r.contains(pos):
+            return None
+        nx, ny = (pos.x() - r.left()) / r.width(), (pos.y() - r.top()) / r.height()
+        for i, (cx, cy, cw, ch) in enumerate(self.mc_cells):
+            if cx <= nx < cx + cw and cy <= ny < cy + ch:
+                return i
+        return None
+
+    def mc_render(self, t):
+        """Oynatma kafasındaki çoklu kamera grubunun tüm kameralarını ızgarada göster."""
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QFont, QImage, QPen
+        import math as _m
+        from ..media import display_size, oriented_array
+        proj = self.main.project
+        c = proj.multicam_clip_at(t)
+        if c is None:
+            c = next((x for x in proj.clips if x.mc and proj.track_is_video(x.track)), None)
+            tau = None
+        else:
+            tau = c.source_time(t)
+        g = proj.multicams.get(c.mc) if c is not None else None
+        aspect = proj.width / proj.height
+        self.view.aspect = aspect
+        W = int(min(self.view.target_rect().width() * self.devicePixelRatioF(), 1280))
+        W = max(W // 2 * 2, 320)
+        H = max(2, int(W / aspect) // 2 * 2)
+        img = QImage(W, H, QImage.Format_RGB32)
+        img.fill(QColor("#08090a"))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self.mc_cells = []
+        if g is None:
+            p.setPen(QColor("#80868b"))
+            p.drawText(img.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                       _("No multi-camera clip on the timeline. Select cameras in the Project "
+                         "panel → right-click → Create Multi-Camera Source Sequence."))
+            p.end()
+            self.title.setText(_("Multi-Camera"))
+            self.view.image = img
+            self.view.update()
+            return
+        self.title.setText(_("Multi-Camera") + ": " + g["name"])
+        n = len(g["angles"])
+        cols = max(1, _m.ceil(_m.sqrt(n)))
+        rows = _m.ceil(n / cols)
+        cw, ch = W / cols, H / rows
+        f = QFont(self.font())
+        f.setBold(True)
+        f.setPixelSize(max(12, int(ch / 9)))
+        p.setFont(f)
+        for i, a in enumerate(g["angles"]):
+            col, row = i % cols, i // cols
+            cell = QRectF(col * cw, row * ch, cw, ch)
+            self.mc_cells.append((col / cols, row / rows, 1 / cols, 1 / rows))
+            m = proj.media.get(a["media_id"])
+            inner = cell.adjusted(2, 2, -2, -2)
+            if m is not None and tau is not None and self.mc_pool is not None:
+                st = tau - a.get("offset", 0.0)
+                src = self.mc_pool.video_source(m) if 0 <= st <= m.duration else None
+                fr = src.frame_at(st) if src is not None else None
+                if fr is not None:
+                    rot = m.rotation if not getattr(src, "is_proxy", False) else 0
+                    fw, fh = display_size(fr, rot)
+                    s = min(inner.width() / fw, inner.height() / fh)
+                    tw, th = max(2, int(fw * s) // 2 * 2), max(2, int(fh * s) // 2 * 2)
+                    arr = np.ascontiguousarray(oriented_array(fr, tw, th, "rgb24", rot))
+                    q = QImage(arr.data, tw, th, arr.strides[0], QImage.Format_RGB888)
+                    p.drawImage(QRectF(inner.center().x() - tw / 2,
+                                       inner.center().y() - th / 2, tw, th), q)
+            active = c.mc_angle == i
+            if self._mc_flash == i:
+                p.setPen(QPen(QColor("#ff3b3b"), 5))
+            elif active:
+                p.setPen(QPen(QColor("#ffcc33"), 4))
+            else:
+                p.setPen(QPen(QColor(255, 255, 255, 40), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(cell.adjusted(2, 2, -2, -2))
+            p.setPen(QColor("#ffcc33") if active else QColor("#e8eaed"))
+            label = f"{i + 1}  " + (m.name if m else "?")
+            p.drawText(inner.adjusted(8, 4, -8, -4), Qt.AlignLeft | Qt.AlignTop, label)
+        p.end()
+        self.view.image = img
+        self.view.update()
 
     # ------------------------------------------------------------ medya
     def load(self, media):
+        if self.mc_mode:
+            self.mc_mode = False
+            if hasattr(self.main, "mc_view_action"):
+                self.main.mc_view_action.setChecked(False)
         self.player.pause()
         self.media = media
         p = Project(max(2, media.width or 1920) // 2 * 2, max(2, media.height or 1080) // 2 * 2,
@@ -223,6 +287,8 @@ class SourceMonitor(QWidget):
             self.project = Project()
             self.view.image = None
             self.title.setText(_("Source: (none)"))
+            self.tc.setText("00:00:00:00")
+            self.inout.setText("00:00:00:00")
             self.view.update()
             self.bar.update()
 
@@ -281,11 +347,10 @@ class SourceMonitor(QWidget):
 
     # ------------------------------------------------------------ çizim
     def _on_state(self, playing):
-        icon = QStyle.SP_MediaPause if playing else QStyle.SP_MediaPlay
-        self.play_btn.setIcon(self.style().standardIcon(icon))
+        self.play_btn.setIcon(glyph_icon("pause" if playing else "play"))
 
     def _show(self, t):
-        if self.media is None or self.comp is None:
+        if self.media is None or self.comp is None or self.mc_mode:
             return
         r = self.view.target_rect()
         w = int(min(r.width() * self.devicePixelRatioF(), PREVIEW_MAX_W, self.project.width))
@@ -303,12 +368,15 @@ class SourceMonitor(QWidget):
         a, b = self.marks()
         if a is not None or b is not None:
             aa, bb = a or 0.0, b if b is not None else self.duration()
-            self.inout.setText(f"I {timecode(aa, fps)}  O {timecode(bb, fps)}  "
-                               f"Δ {timecode(bb - aa, fps)}")
+            self.inout.setText("{ } " + timecode(bb - aa, fps))
+            self.inout.setToolTip(f"{_('In')} {timecode(aa, fps)}   {_('Out')} {timecode(bb, fps)}")
         else:
             self.inout.setText(timecode(self.duration(), fps))
+            self.inout.setToolTip("")
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        if self.media is not None:
+        if self.mc_mode:
+            self.mc_render(self.main.timeline.playhead)
+        elif self.media is not None:
             self._show(self.clock.playhead)

@@ -4,8 +4,8 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import QMimeData, QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QImage, QPixmap, QPainter
+from PySide6.QtCore import QMimeData, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QImage, QPen, QPixmap, QPainter
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QFileDialog, QMessageBox, QComboBox, QDoubleSpinBox,
                                QFormLayout, QGroupBox, QLayout, QToolButton,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
@@ -74,6 +74,30 @@ class MediaBin(QListWidget):
                     tip += "\n" + _("Proxy") + ": " + m.proxy
             it.setToolTip(plain_tip(tip))
             self.addItem(it)
+        for gid, g in self.main.project.multicams.items():
+            it = QListWidgetItem(self.mc_icon(g), f"🎥 {g['name']}\n"
+                                 f"{len(g['angles'])} " + _("cameras"))
+            it.setData(Qt.UserRole, "mc:" + gid)
+            it.setToolTip(plain_tip(_("Multi-camera source") + ": " + g["name"]))
+            self.addItem(it)
+
+    def mc_icon(self, g) -> QIcon:
+        """Çoklu kamera simgesi: ilk dört kameranın küçük resimleri 2×2."""
+        pm = QPixmap(144, 81)
+        pm.fill(QColor("#2b2f36"))
+        p = QPainter(pm)
+        for i, a in enumerate(g["angles"][:4]):
+            th = self.main.thumbnails.get(a["media_id"])
+            r = QRect((i % 2) * 72, (i // 2) * 40, 71, 40)
+            if th is not None:
+                p.drawImage(r, th.scaled(71, 40, Qt.KeepAspectRatioByExpanding,
+                                         Qt.SmoothTransformation))
+            p.setPen(QColor("#ffcc33"))
+            p.drawText(r.adjusted(3, 2, 0, 0), Qt.AlignLeft | Qt.AlignTop, str(i + 1))
+        p.setPen(QPen(QColor("#ffcc33"), 2))
+        p.drawRect(pm.rect().adjusted(1, 1, -1, -1))
+        p.end()
+        return QIcon(pm)
 
     def label_for(self, m) -> str:
         if m.kind == "image":
@@ -161,14 +185,25 @@ class MediaBin(QListWidget):
             p.end()
 
     def _open_source(self, it):
-        m = self.main.project.media.get(it.data(Qt.UserRole))
+        key = it.data(Qt.UserRole)
+        if isinstance(key, str) and key.startswith("mc:"):
+            self.main.place_multicam(key[3:], self.main.timeline.playhead)
+            return
+        m = self.main.project.media.get(key)
         if m is not None:
             self.main.open_in_source(m)
 
     def _add_at_playhead(self, items):
         t = self.main.timeline.playhead
         for it in items:
-            m = self.main.project.media.get(it.data(Qt.UserRole))
+            key = it.data(Qt.UserRole)
+            if isinstance(key, str) and key.startswith("mc:"):
+                g = self.main.project.multicams.get(key[3:])
+                if g:
+                    self.main.place_multicam(key[3:], t)
+                    t += self.main.project.multicam_duration(g)
+                continue
+            m = self.main.project.media.get(key)
             if m:
                 self.main.place_media(m, t, None)
                 t += m.duration if m.kind != "image" else 5.0
@@ -176,6 +211,16 @@ class MediaBin(QListWidget):
     def _menu(self, pos):
         items = self.selectedItems()
         menu = QMenu(self)
+        mcs = [i.data(Qt.UserRole)[3:] for i in items
+               if str(i.data(Qt.UserRole)).startswith("mc:")]
+        if mcs:
+            menu.addAction(_("Add to Timeline"), lambda: self._add_at_playhead(items))
+            menu.addAction(_("Rename…"), lambda: self.main.rename_multicam(mcs[0]))
+            menu.addAction(_("Remove from Project"), lambda: self.main.remove_multicams(mcs))
+            menu.exec(self.mapToGlobal(pos))
+            return
+        vids_mc = [self.main.project.media.get(i.data(Qt.UserRole)) for i in items]
+        vids_mc = [v for v in vids_mc if v is not None and v.kind in ("video", "audio")]
         if items:
             menu.addAction(_("Open in Source Monitor"), lambda: self._open_source(items[0]))
             menu.addAction(_("Add to Timeline"), lambda: self._add_at_playhead(items))
@@ -189,6 +234,9 @@ class MediaBin(QListWidget):
             if m0 is not None and m0.kind != "audio":
                 menu.addAction("🎨 " + _("Use as Color Reference"),
                                lambda: self.main.set_color_reference_media(m0))
+            if len(vids_mc) >= 2:
+                menu.addAction("🎥 " + _("Create Multi-Camera Source Sequence…"),
+                               lambda: self.main.create_multicam_dialog(vids_mc))
             menu.addAction(_("Remove from Project"),
                            lambda: self.main.remove_media([i.data(Qt.UserRole) for i in items]))
             menu.addSeparator()
@@ -359,6 +407,10 @@ class EffectBox(QGroupBox):
                 form.addRow(_(label), btn)
         if effect["type"] == "color_match":
             self._build_color_match(form)
+        if effect["type"] == "lumetri":
+            b = QPushButton(_("Open Lumetri Color panel (curves, wheels)"))
+            b.clicked.connect(lambda: self.ins.main.show_dock(self.ins.main.color_dock))
+            form.addRow(b)
 
     def _build_color_match(self, form):
         p = self.effect["params"]
@@ -603,6 +655,14 @@ class Inspector(QScrollArea):
         self.lay.insertWidget(1, self.tsel_group)
         self.tsel_group.setVisible(False)
         self.tsel = None
+        from .mask_panel import MaskPanel
+        self.mask_panel = MaskPanel(self)
+        self.lay.insertWidget(self.lay.indexOf(self.groups["Motion"]) + 1, self.mask_panel)
+        self.mask_panel.setVisible(False)
+        from .mixer import AudioFxPanel
+        self.afx_panel = AudioFxPanel(self)
+        self.lay.insertWidget(self.lay.indexOf(self.groups["Audio"]) + 1, self.afx_panel)
+        self.afx_panel.setVisible(False)
         self.reset_btn = QPushButton(_("Reset"))
         self.reset_btn.clicked.connect(self._reset)
         self.lay.addWidget(self.reset_btn)
@@ -624,6 +684,8 @@ class Inspector(QScrollArea):
             b.setParent(None)
             b.deleteLater()
         self.fx_boxes = []
+        self.mask_panel.set_clip(clip)
+        self.afx_panel.set_clip(clip)
         if not enabled:
             self.fx_group.setVisible(False)
             self.title.setText(_("No clip selected"))

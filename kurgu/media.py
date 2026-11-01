@@ -85,9 +85,13 @@ class VideoSource:
     doğru çözer; atlamalarda en yakın anahtar kareye gidip oradan ilerler.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, hw: bool = True):
         self.path = path
-        self.container = av.open(path)
+        if hw:
+            from . import hw as _hw
+            self.container = _hw.open_video(path)  # mümkünse GPU ile çöz
+        else:
+            self.container = av.open(path)
         self.stream = self.container.streams.video[0]
         self.stream.thread_type = "AUTO"
         self.tb = float(self.stream.time_base)
@@ -233,7 +237,7 @@ class AudioSource:
             chunk = self._buf[offset:offset + n]
             out[:len(chunk)] = chunk
             # Okunan kısmı at ama biraz geri tampon bırak.
-            drop = max(0, offset - self.sr)
+            drop = max(0, offset - 2 * self.sr)  # 2 sn geri tampon (ses efektlerinin ısınması)
             if drop:
                 self._buf = self._buf[drop:]
                 self._buf_t += drop / self.sr

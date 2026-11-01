@@ -18,8 +18,11 @@ sayfasından işletim sisteminize uygun dosyayı indirin. Python kurmanız gerek
 |---|---|---|
 | Windows | `Kurgu-…-setup.exe` | Çalıştırın, ileri ileri. `.kurgu` dosyaları çift tıklayınca açılır |
 | Windows (taşınabilir) | `Kurgu-…-windows.zip` | Klasöre çıkarın, `Kurgu.exe`'ye çift tıklayın |
-| macOS | `Kurgu-…-macos.zip` | Çıkarın, `Kurgu.app`'i Uygulamalar'a taşıyın. İlk açılışta **sağ tık → Aç** (imzasız uygulama uyarısı) |
-| Linux | `Kurgu-…-linux-x86_64.tar.gz` | Çıkarın, `Kurgu/Kurgu` dosyasını çalıştırın. Ubuntu/Debian'da gerekirse: `sudo apt install libxcb-cursor0` |
+| macOS | `Kurgu-…-macos.dmg` | Açın, `Kurgu`'yu Uygulamalar'a sürükleyin. İmzasız sürümde ilk açılışta **sağ tık → Aç** |
+| macOS (zip) | `Kurgu-…-macos.zip` | Çıkarın, `Kurgu.app`'i Uygulamalar'a taşıyın |
+| Linux (AppImage) | `Kurgu-…-x86_64.AppImage` | Tek dosya: `chmod +x Kurgu-*.AppImage` ve çalıştırın |
+| Linux (tar.gz) | `Kurgu-…-linux-x86_64.tar.gz` | Çıkarın, `Kurgu/Kurgu` dosyasını çalıştırın. Ubuntu/Debian'da gerekirse: `sudo apt install libxcb-cursor0` |
+| Linux (Flatpak) | `packaging/flatpak/` | `flatpak-builder --user --install build-dir packaging/flatpak/org.kurgu.Kurgu.yml` |
 
 ## Kaynaktan çalıştırma
 
@@ -60,6 +63,17 @@ Kendini güncelleme yalnızca sürüm, geliştiricinin çevrim dışı anahtarı
 çalışır: indirilen kurulumun SHA-256 özeti imzalı `SHA256SUMS.txt` ile karşılaştırılır,
 uyuşmazsa dosya silinir ve çalıştırılmaz. İmzasız sürümlerde indirme sayfası açılır.
 
+### İmzalı paketler (isteğe bağlı)
+
+GitHub deposunda **Settings → Secrets** altında şu sırlar tanımlanırsa sürüm paketleri imzalanır;
+tanımlı değilse paketler imzasız üretilir:
+
+| Sır | Ne için |
+|---|---|
+| `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY` | macOS Developer ID imzası (base64 .p12) |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | Apple noter onayı (notarization) |
+| `WINDOWS_CERT_PFX`, `WINDOWS_CERT_PASSWORD` | Windows Authenticode imzası (base64 .pfx) |
+
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
@@ -83,7 +97,7 @@ python packaging/sign_release.py v0.8.1   # her sürümden sonra (GitHub CLI "gh
 Gizli anahtar `~/.kurgu-signing/` klasöründe kalır; depoya ya da GitHub'a yüklenmez.
 Ayrıntılar: [SECURITY.md](SECURITY.md).
 
-## Özellikler (v0.8)
+## Özellikler (v0.9)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -93,6 +107,29 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   iterek araya koyar, Üzerine Yaz (`.`) yerine yazar; görüntüyü sürükleyip zaman çizelgesine bırak
 - **Profesyonel kesme araçları:** Ripple (B), Roll (N), Slip (Y), Slide (U); bağlı ses/görüntü
   birlikte düzenlenir, kesme karesi program monitöründe görünür
+- **Lumetri Renk (Shift+6):** sıcaklık/ton, pozlama, kontrast, parlak alanlar/gölgeler,
+  beyazlar/siyahlar, doygunluk, canlılık, **Otomatik** düzeltme; RGB / R / G / B **eğrileri**;
+  gölge / orta ton / parlak alan **renk tekerlekleri**. Hızlı: 720p karede 13–27 ms
+- **Lumetri Skopları (Shift+7):** dalga formu (luma), RGB parade, vektörskop (hedefler ve cilt
+  tonu çizgisi), histogram. *Görünüm → Renk Çalışma Alanı* ikisini birlikte açar
+- **Çoklu kamera:** Proje panelinde kameraları seç → sağ tık → *Çoklu Kamera Kaynak Sekansı
+  Oluştur*. Kameralar **sesten otomatik eşitlenir** (çapraz korelasyon, ms altı doğruluk).
+  Oynatırken **1–9** ile kameraya kes; *Görünüm → Çoklu Kamera Görünümü* (Shift+0) tüm açıları
+  ızgarada gösterir, tıklayınca keser. Görüntüsü olmayan açı siyah görünür
+- **Otomatik altyazı (Whisper):** *Altyazılar* paneli → Konuşmadan Altyazı Oluştur; Türkçe dahil
+  12 dil + otomatik algılama, kelime zamanlarına göre dengeli 2 satır. SRT/VTT içe ve dışa
+  aktarma, listeden düzenleme, iz bazında stil (boyut, konum, renk, kutu, kontur). Model ilk
+  kullanımda indirilir (`~/.kurgu/models`), sonrası internetsiz çalışır
+- **Maskeler:** elips, dikdörtgen ve **kalem** (serbest çokgen); yumuşatma, genişletme, opaklık,
+  ters, ekle/çıkar/kesişim. Program monitöründe sürükleyerek düzenlenir, klip taşınınca maske de
+  onunla gider
+- **Karıştırma modları (13):** çarp, ekran, kaplama, koyulaştır, açıklaştır, renk soldurma/yanması,
+  sert/yumuşak ışık, fark, dışlama, ekle. **İz matı:** başka bir izin alfa ya da parlaklığıyla kes
+- **Ses İzi Mikseri (Shift+9):** iz başına seviye göstergesi, fader, pan, sessiz/solo, ana çıkış
+- **Ses efektleri:** ekolayzer (alçak kesme, bas, orta, varlık, tiz), kompresör, gürültü kapısı,
+  uğultu giderici (50/60 Hz ve harmonikleri), de-esser. Parça parça işlemede kesintisiz
+- **Ses yüksekliğini eşitle:** BS.1770 LUFS ölçümüyle YouTube -14, podcast -16, TV -23 LUFS ya da
+  tepe -1 dBFS
 - **Bağlı klipler:** videonun görüntüsü ve sesi birlikte hareket eder, istenirse ayrılır
 - **Sınırsız geri al / yinele**
 - **Program monitörü:** sesli gerçek zamanlı oynatma, J/K/L ile hızlı ileri/geri
@@ -124,7 +161,11 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   - **Oynatma çözünürlüğü** (monitörün sağ altında): Tam / 1/2 / 1/4. Durunca her zaman
     tam çözünürlükte netleşir
   - Bir klibi düzenleyince yalnızca o klibin göründüğü kareler yeniden hesaplanır
-  - Önbellek varsayılan 1 GB bellek kullanır (`KURGU_CACHE_MB` ile değiştirilebilir)
+  - Önbellek varsayılan 1 GB bellek kullanır; **render dosyaları diske de yazılır**
+    (`~/.kurgu/render`, varsayılan 10 GB): program yeniden açılınca tekrar render gerekmez.
+    *Düzen → Tercihler* (Ctrl+,) ile ayarlanır
+  - **GPU ile çözme:** NVIDIA, Intel, AMD ve Apple donanım çözücüleri otomatik kullanılır
+    (yoksa CPU'ya döner); dışa aktarmada **GPU kodlayıcı** (NVENC, QSV, AMF, VideoToolbox)
 - **Mıknatıs ve hassas taşıma:** klipler taşınırken ve kırpılırken komşu kenarlara yapışır
   (sarı kılavuz çizgi). Komşunun üzerine *biraz* kaydırırsan kenarına dayanır; daha da
   bastırırsan klip kenardan sıçramadan, akıcı biçimde içeri girer (bilerek bindirmek için).
@@ -168,7 +209,11 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
 - **Kopyala / kes / yapıştır** ve **özellikleri yapıştır** (efekt, renk, hareket aktarımı)
 - **Başlıklar:** çok satırlı, renkli, kenarlıklı metin
 - **Proje ayarları:** 4K, 1080p, 720p, dikey 9:16 (Reels/Shorts), kare 1:1, istenen kare hızı
-- **Dışa aktarma:** MP4 (H.264 + AAC), çözünürlük ve kalite seçimi, arka planda ilerleme çubuğu
+- **Dışa aktarma (Ctrl+M):** hazır ayarlar (YouTube 1080p/4K, Reels/TikTok/Shorts 9:16,
+  Instagram 1:1, X, ProRes ana kopya, WebM, GIF, MP3/WAV); biçimler H.264, H.265, **H.265 10-bit**,
+  **ProRes 422 HQ (10-bit)**, VP9, AV1, GIF, MP3, WAV. 10-bit biçimlerde kareler 16 bit/kanal
+  işlenir (bantlanmasız). Zaman çizelgesinde **I / O** ile aralık işaretleyip yalnız onu dışa aktar.
+  Farklı en-boy oranında siyah kenar eklenir. **Kareyi Dışa Aktar** (Ctrl+Shift+E): PNG/JPEG
 - **Proje dosyası:** okunabilir JSON (`.kurgu`), klasör taşınsa da medyayı bulur
 - **Arayüz dili:** sistem diline göre Türkçe veya İngilizce
 
@@ -183,7 +228,14 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
 | V / C | Seçim aracı / jilet aracı |
 | B / N | Ripple aracı (kenarı çek, sonrakiler takip etsin) / Roll aracı (kesmeyi kaydır) |
 | Y / U | Slip aracı (kaynağı kaydır) / Slide aracı (klibi komşuları arasında kaydır) |
-| I / O | Kaynak monitöründe giriş / çıkış işaretle |
+| I / O | Giriş / çıkış işaretle (kaynak monitörü odaktaysa kaynakta, değilse sekansta) |
+| Ctrl+Shift+X | Giriş/çıkış işaretlerini temizle |
+| 1 – 9 | Çoklu kamera: o kameraya kes (oynatırken de) |
+| Shift+0 | Çoklu kamera görünümü |
+| Shift+6 / Shift+7 / Shift+9 | Lumetri Renk / Lumetri Skopları / Ses İzi Mikseri |
+| Ctrl+Shift+E | Kareyi dışa aktar |
+| Ctrl+, | Tercihler |
+| Esc | Kalem maskesini iptal et |
 | , / . | Kaynaktan ekle / üzerine yaz (oynatma kafasına) |
 | Ctrl+K | Oynatma kafasında böl |
 | Delete / Shift+Delete | Sil / boşluğu kapatarak sil |
@@ -223,8 +275,15 @@ kurgu/
   effects.py      Video efektleri (yeni efekt = tek fonksiyon + @register)
   transitions.py  Video geçişleri
   proxy.py        Proxy üretimi (ağır videoların hafif kopyaları)
-  rendercache.py  Render önbelleği, kare imzası, arka plan işçisi
-  render.py       Katman birleştirme (QPainter), renk, ses miksajı, MP4 dışa aktarma
+  rendercache.py  Render önbelleği (bellek + kalıcı disk), kare imzası, arka plan işçisi
+  render.py       Katman birleştirme (QPainter, 8/16 bit), maske/mat, ses miksajı
+  grading.py      Lumetri renk düzeltme (ton tablosu, eğriler, tekerlekler, 16 bit yol)
+  masks.py        Maskeler, karıştırma modları, iz matı
+  multicam.py     Çoklu kamera: sesten eşitleme (FFT çapraz korelasyon)
+  captions.py     Altyazılar: SRT/VTT, satır bölme, Whisper ile konuşma tanıma
+  audio.py        Ses efektleri (FIR EQ, dinamikler), pan, LUFS ölçümü
+  exporter.py     Dışa aktarma biçimleri, hazır ayarlar, 10-bit, GIF paleti
+  hw.py           Donanım (GPU) ile çözme ve kodlama
   updater.py      Güncelleme denetimi ve Windows'ta kendini güncelleme
   autosave.py     Otomatik kaydetme, oturum kilidi, çökme kurtarma
   i18n.py         Çeviriler
@@ -232,11 +291,16 @@ kurgu/
     main_window.py  Menüler, kısayollar, proje işlemleri, dışa aktarma penceresi
     timeline.py     Zaman çizelgesi bileşeni
     player.py       Program monitörü ve ses senkronlu oynatma
-    source.py       Kaynak monitörü (I/O, Ekle / Üzerine Yaz)
+    source.py       Kaynak monitörü (I/O, Ekle / Üzerine Yaz, çoklu kamera ızgarası)
+    color_panel.py  Lumetri Renk paneli (tekerlekler, eğri düzenleyici)
+    scopes.py       Skoplar
+    mask_panel.py   Opaklık ve Maskeler bölümü
+    mixer.py        Ses izi mikseri ve klip ses efektleri
+    captions_panel.py Altyazılar paneli
     panels.py       Medya kutusu ve denetçi (efekt kontrolleri dahil)
     effects_panel.py Efektler paneli
 tests/            pytest testleri (sentetik videolarla)
-packaging/        PyInstaller paketleme, simge, Windows kurulum betiği (Inno Setup)
+packaging/        PyInstaller paketleme, AppImage, macOS dmg/imza, Inno Setup, Flatpak
 ```
 
 Önizleme ve dışa aktarma **aynı** `Compositor` sınıfını kullanır; ekranda ne
@@ -252,18 +316,20 @@ Katkılarınızı bekleyen başlıca konular:
 - [x] Klipler arası geçişler (16 tür)
 - [x] Chroma key, luma key ve 18 video efekti
 - [x] LUT (.cube) desteği ve renk eşleştirme
-- [ ] Renk tekerlekleri, eğriler, vektörskop
-- [ ] Uçtan uca 10-bit işleme ve 10-bit (HEVC/ProRes) dışa aktarma
-- [ ] Maskeleme (kalem aracı ile şekil maskesi), iz matı (track matte)
-- [ ] Karıştırma modları (çarp, ekran, kaplama…)
-- [ ] Ses mikseri, ses efektleri, normalizasyon
+- [x] Lumetri renk: tekerlekler, eğriler; dalga formu, vektörskop, histogram
+- [x] Çoklu kamera (sesten eşitleme)
+- [x] Whisper ile otomatik altyazı, SRT/VTT
+- [x] 10-bit işleme ve 10-bit (HEVC/ProRes) dışa aktarma, hazır ayarlar, WebM, AV1, GIF
+- [x] Maskeleme (kalem dahil), iz matı, karıştırma modları
+- [x] Ses mikseri, ses efektleri, LUFS normalizasyonu
 - [x] Proxy (düşük çözünürlüklü kopya) ile düzenleme
-- [ ] GPU hızlandırma (OpenGL/Vulkan ile birleştirme)
-- [ ] Diske kalıcı render dosyaları
-- [ ] Whisper ile otomatik altyazı
-- [ ] Daha fazla çıktı biçimi (ProRes, WebM, GIF)
-- [x] Hazır paketler: Windows kurulum + taşınabilir zip, macOS `.app`, Linux tar.gz
-- [ ] Linux AppImage / Flatpak, imzalı macOS ve Windows paketleri
+- [x] Diske kalıcı render dosyaları, GPU ile çözme ve kodlama
+- [x] Hazır paketler: Windows kurulum + zip, macOS dmg/zip, Linux AppImage/tar.gz, Flatpak manifesti
+- [ ] GPU ile katman birleştirme (OpenGL/Vulkan)
+- [ ] Maske yolu ve renk tekerleklerinde anahtar kare
+- [ ] Ses kaydı (seslendirme), ses geçişleri kütüphanesi
+- [ ] Altyazı stil şablonları ve kelime kelime vurgulu altyazı (Reels tarzı)
+- [ ] İç içe sekanslar (nested sequence)
 - [ ] Yeni dil çevirileri (`kurgu/i18n.py`)
 
 ## Katkı

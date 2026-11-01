@@ -37,7 +37,10 @@ class FrameSig:
         if h is None:
             m = self.p.media.get(c.media_id)
             px = m.proxy if (m and self.proxy and m.proxy and os.path.exists(m.proxy)) else ""
-            data = json.dumps([asdict(c), m.path if m else "", px], sort_keys=True, default=str)
+            style = self.p.tracks[c.track].style if (c.kind == "caption" and
+                                                     c.track < len(self.p.tracks)) else None
+            data = json.dumps([asdict(c), m.path if m else "", _file_id(m.path) if m else "",
+                               px, self.p.media_offset(c), style], sort_keys=True, default=str)
             h = hashlib.blake2b(data.encode(), digest_size=10).hexdigest()
             self._h[c.id] = h
         return h
@@ -53,10 +56,30 @@ class FrameSig:
                 continue
             if st[0] == "clip":
                 parts.append((ti, self.clip_hash(st[1])))
+                mt = st[1].matte or {}
+                if isinstance(mt.get("track"), int) and 0 <= mt["track"] < len(p.tracks):
+                    ms = self.comp.track_state(mt["track"], t)  # mat izinin içeriği de etkiler
+                    if ms is not None and ms[0] == "clip":
+                        parts.append(("matte", self.clip_hash(ms[1])))
+                    elif ms is not None:
+                        parts.append(("matte", ms[4], ms[1] and self.clip_hash(ms[1]),
+                                      ms[2] and self.clip_hash(ms[2]), round(ms[3], 3)))
             else:
                 _k, a, b, _prog, kind = st
                 parts.append((ti, kind, a and self.clip_hash(a), b and self.clip_hash(b)))
         return hashlib.blake2b(repr(parts).encode(), digest_size=12).hexdigest()
+
+
+_FILE_IDS: dict = {}
+
+
+def _file_id(path: str) -> str:
+    """Dosya değişirse (aynı adla üzerine yazılırsa) eski render dosyaları kullanılmasın."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ""
+    return f"{st.st_size}:{int(st.st_mtime)}"
 
 
 class _NullPool:
@@ -111,28 +134,68 @@ def heavy_frames(project: Project) -> list[int]:
 
 # ------------------------------------------------------------ önbellek
 class FrameCache:
-    """İş parçacığı güvenli LRU kare önbelleği (bayt bütçeli)."""
+    """İş parçacığı güvenli LRU kare önbelleği (bayt bütçeli) + isteğe bağlı kalıcı disk
+    katmanı (Premiere'deki "önizleme dosyaları"): render edilen kareler diske JPEG olarak
+    yazılır, program yeniden açılınca tekrar render gerekmez. Anahtar içerik özetidir;
+    proje değişse de aynı içerik aynı dosyayı bulur."""
 
-    def __init__(self, budget_mb: int | None = None):
+    def __init__(self, budget_mb: int | None = None, disk_dir: str | None = None,
+                 disk_mb: int | None = None):
         mb = budget_mb or int(os.environ.get("KURGU_CACHE_MB", "1024"))
         self.budget = mb * 1024 * 1024
         self.items: OrderedDict = OrderedDict()
         self.bytes = 0
         self.lock = threading.Lock()
         self.generation = 0  # değişince zaman çizelgesi çubuğu yeniden hesaplanır
+        self.disk_dir = disk_dir
+        self.disk_budget = (disk_mb if disk_mb is not None else
+                            int(os.environ.get("KURGU_DISK_CACHE_MB", "10240"))) * 1024 * 1024
+        self.disk_index: set[str] = set()
+        self.disk_bytes = 0
+        if disk_dir:
+            try:
+                os.makedirs(disk_dir, exist_ok=True)
+                for n in os.listdir(disk_dir):
+                    if n.endswith(".jpg"):
+                        self.disk_index.add(n)
+                        try:
+                            self.disk_bytes += os.path.getsize(os.path.join(disk_dir, n))
+                        except OSError:
+                            pass
+            except OSError:
+                self.disk_dir = None
+
+    @staticmethod
+    def _name(key) -> str:
+        fi, sig, w, h = key
+        return f"{sig}_{fi}_{w}x{h}.jpg"
 
     def get(self, key):
         with self.lock:
             img = self.items.get(key)
             if img is not None:
                 self.items.move_to_end(key)
+                return img
+            name = self._name(key) if self.disk_dir else None
+            on_disk = name in self.disk_index if name else False
+        if on_disk:
+            from PySide6.QtGui import QImage
+            img = QImage(os.path.join(self.disk_dir, name))
+            if img.isNull():
+                with self.lock:
+                    self.disk_index.discard(name)
+                return None
+            img = img.convertToFormat(QImage.Format_RGB32)
+            self._put_mem(key, img)
             return img
+        return None
 
     def has(self, key) -> bool:
         with self.lock:
-            return key in self.items
+            return key in self.items or (self.disk_dir is not None
+                                         and self._name(key) in self.disk_index)
 
-    def put(self, key, img):
+    def _put_mem(self, key, img):
         size = img.sizeInBytes()
         with self.lock:
             if key in self.items:
@@ -144,11 +207,65 @@ class FrameCache:
                 self.bytes -= old.sizeInBytes()
             self.generation += 1
 
-    def clear(self):
+    def put(self, key, img, persist: bool = False):
+        self._put_mem(key, img)
+        if persist and self.disk_dir:
+            name = self._name(key)
+            with self.lock:
+                if name in self.disk_index:
+                    return
+            path = os.path.join(self.disk_dir, name)
+            tmp = path + ".tmp.jpg"
+            if img.save(tmp, "JPG", 93):
+                try:
+                    os.replace(tmp, path)
+                    size = os.path.getsize(path)
+                except OSError:
+                    return
+                with self.lock:
+                    self.disk_index.add(name)
+                    self.disk_bytes += size
+                    self.generation += 1
+                if self.disk_bytes > self.disk_budget:
+                    self._trim_disk()
+
+    def _trim_disk(self):
+        """Disk bütçesi aşılınca en eski dosyaları sil (%80'e kadar)."""
+        try:
+            files = [(e.stat().st_mtime, e.stat().st_size, e.path, e.name)
+                     for e in os.scandir(self.disk_dir) if e.name.endswith(".jpg")]
+        except OSError:
+            return
+        files.sort()
+        total = sum(f[1] for f in files)
+        for _m, size, path, name in files:
+            if total <= self.disk_budget * 0.8:
+                break
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= size
+            with self.lock:
+                self.disk_index.discard(name)
+        with self.lock:
+            self.disk_bytes = total
+            self.generation += 1
+
+    def clear(self, disk: bool = False):
         with self.lock:
             self.items.clear()
             self.bytes = 0
             self.generation += 1
+        if disk and self.disk_dir:
+            for name in list(self.disk_index):
+                try:
+                    os.remove(os.path.join(self.disk_dir, name))
+                except OSError:
+                    pass
+            with self.lock:
+                self.disk_index.clear()
+                self.disk_bytes = 0
 
     def frame_bytes(self, w: int, h: int) -> int:
         return w * h * 4
@@ -170,10 +287,11 @@ class RenderWorker:
         self.thread.start()
 
     def submit(self, snapshot: Project, frames: list[int], w: int, h: int,
-               progress=None, done=None, use_proxy: bool = False) -> int:
+               progress=None, done=None, use_proxy: bool = False, persist: bool = False) -> int:
         with self.cond:
             self.job_id += 1
-            self.job = (self.job_id, snapshot, list(frames), w, h, progress, done, use_proxy)
+            self.job = (self.job_id, snapshot, list(frames), w, h, progress, done, use_proxy,
+                        persist)
             self.cond.notify()
             return self.job_id
 
@@ -214,7 +332,7 @@ class RenderWorker:
                     continue
                 job = self.job
                 self.job = None
-            jid, snap, frames, w, h, progress, done, use_proxy = job
+            jid, snap, frames, w, h, progress, done, use_proxy, persist = job
             if self.pool is None:  # medya kimlikleri kopyada korunur: çözücüler yeniden kullanılır
                 self.pool = SourcePool(snap.sample_rate)
             self.pool.use_proxy = use_proxy
@@ -230,7 +348,7 @@ class RenderWorker:
                 key = (fi, sig(t), w, h)
                 if not self.cache.has(key):
                     try:
-                        self.cache.put(key, comp.compose(t, w, h))
+                        self.cache.put(key, comp.compose(t, w, h), persist=persist)
                     except Exception:
                         pass
                 if progress is not None:

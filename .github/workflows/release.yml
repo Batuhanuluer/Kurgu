@@ -18,6 +18,10 @@ env:
   PYTHONUTF8: "1"
   PYTHONIOENCODING: utf-8
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # İmza sırları tanımlıysa ilgili adımlar çalışır (yoksa paketler imzasız üretilir).
+  # Burada yalnızca "var mı" bilgisi tutulur; sırların kendisi yalnız ilgili adımlara verilir.
+  HAS_MAC_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+  HAS_WIN_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
 
 jobs:
   build:
@@ -35,7 +39,36 @@ jobs:
           python-version: "3.12"
       - name: Linux bağımlılıkları
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0
+        run: sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0 file
+      - name: appimagetool (sabit sürüm, özet doğrulamalı)
+        if: runner.os == 'Linux'
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+      - name: macOS imza sertifikası (varsa)
+        if: runner.os == 'macOS' && env.HAS_MAC_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$RUNNER_TEMP/kurgu.keychain"
+          security set-keychain-settings "$RUNNER_TEMP/kurgu.keychain"
+          security unlock-keychain -p ci "$RUNNER_TEMP/kurgu.keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/kurgu.keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$RUNNER_TEMP/kurgu.keychain"
+          security list-keychains -d user -s "$RUNNER_TEMP/kurgu.keychain"
+      - name: Windows imza sertifikası (varsa)
+        if: runner.os == 'Windows' && env.HAS_WIN_CERT == 'true'
+        shell: bash
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+        run: |
+          echo "$WINDOWS_CERT_PFX" | base64 --decode > "$RUNNER_TEMP/cert.pfx"
+          echo "WINDOWS_SIGN_PFX=$RUNNER_TEMP/cert.pfx" >> "$GITHUB_ENV"
       - name: Inno Setup (Windows kurulum programı)
         if: runner.os == 'Windows'
         run: choco install innosetup --version=6.7.1 --no-progress -y
@@ -49,14 +82,27 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: pytest -q
       - name: Paketle
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          WINDOWS_SIGN_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: python packaging/build.py
+      - name: Paketi dene (açılış + dışa aktarma)
+        run: python packaging/smoke_test.py
       - name: SHA-256 özetleri
         shell: bash
         run: cd dist && for f in Kurgu-*; do [ -f "$f" ] && (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f"); done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: kurgu-${{ matrix.os }}
-          path: dist/Kurgu-*
+          path: |
+            dist/Kurgu-*.zip
+            dist/Kurgu-*.exe
+            dist/Kurgu-*.dmg
+            dist/Kurgu-*.tar.gz
+            dist/Kurgu-*.AppImage
 
   release:
     needs: build
