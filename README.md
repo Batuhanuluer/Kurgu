@@ -59,14 +59,14 @@ projeler korunur. Diğer sistemlerde indirme sayfası açılır. Yardım menüs�
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
-git tag v0.5.3
+git tag v0.6.0
 git push --tags
 ```
 
 GitHub Actions üç işletim sisteminde testleri çalıştırır, paketleri derler ve
 Releases sayfasına yükler (`.github/workflows/release.yml`).
 
-## Özellikler (v0.5)
+## Özellikler (v0.6)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -98,6 +98,16 @@ Releases sayfasına yükler (`.github/workflows/release.yml`).
   çizgi hizayı gösterir
 - **Program monitöründe doğrudan düzenleme:** seçili klibi fareyle sürükleyerek taşı,
   köşelerinden çekerek ölçekle (kronometre açıksa anahtar kare oluşur)
+- **Renk eşleştirme (Premiere Lumetri "Color Match" gibi):** Pinterest'ten ya da bir filmden
+  aldığın bir kareyi Proje paneline bırak → sağ tık **Renk Referansı Olarak Kullan** → kliplerini
+  seç → sağ tık **Renk Paletini Uygula**. Görselin renk dağılımı (ortalama + renkler arası ilişki)
+  klibe aktarılır; denetçide referansın paleti, miktar ve "parlaklığı da eşle" seçeneği görünür.
+  Zaman çizelgesindeki bir klipten de referans alınabilir
+- **LUT (.cube) desteği:** ör. DJI'ın resmî D-Log → Rec.709 LUT'u ya da sinema görünümleri.
+  **D-Log için önerilen sıra:** önce LUT, sonra Renk Eşleştirme (eşleştirme LUT'lu görüntüye göre
+  ölçülür; LUT değişince otomatik yeniden ölçülür)
+- **10-bit görüntü desteği:** D-Log gibi 10-bit videolarda renk işlemi varken görüntü yüksek bit
+  derinliğinde okunur ve dither'la 8-bit'e indirilir: kontrast açılınca gökyüzünde bantlanma olmaz
 - **Efektler paneli (Premiere gibi):** arama, kategoriler, klibin üzerine sürükle-bırak
   veya çift tıkla uygula; efektler sıralanabilir, açılıp kapatılabilir
 - **Anahtarlama:** Chroma Key (yeşil/mavi perde) damlalıkla renk seçme, tolerans,
@@ -166,6 +176,7 @@ kurgu/
   model.py        Proje, iz, klip veri modeli + düzenleme işlemleri + geri al (Qt'den bağımsız)
   media.py        PyAV ile dosya inceleme, kare/ses çözme, önbellek, dalga formu
   keyframes.py    Anahtar kare animasyonu (enterpolasyon, düzenleme)
+  colormatch.py   Renk eşleştirme (doğrusal Monge-Kantorovich aktarımı) ve palet çıkarma
   effects.py      Video efektleri (yeni efekt = tek fonksiyon + @register)
   transitions.py  Video geçişleri
   rendercache.py  Render önbelleği, kare imzası, arka plan işçisi
@@ -194,7 +205,9 @@ Katkılarınızı bekleyen başlıca konular:
 - [ ] Kaynak monitörü ve giriş/çıkış noktalarıyla (I/O) ekleme
 - [x] Klipler arası geçişler (16 tür)
 - [x] Chroma key, luma key ve 18 video efekti
-- [ ] LUT desteği, renk tekerlekleri, eğriler, vektörskop
+- [x] LUT (.cube) desteği ve renk eşleştirme
+- [ ] Renk tekerlekleri, eğriler, vektörskop
+- [ ] Uçtan uca 10-bit işleme ve 10-bit (HEVC/ProRes) dışa aktarma
 - [ ] Maskeleme (kalem aracı ile şekil maskesi), iz matı (track matte)
 - [ ] Karıştırma modları (çarp, ekran, kaplama…)
 - [ ] Ses mikseri, ses efektleri, normalizasyon

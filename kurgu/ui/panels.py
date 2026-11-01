@@ -1,11 +1,12 @@
 """Medya kutusu (proje paneli) ve denetçi (klip özellikleri)."""
 from __future__ import annotations
 
+import os
 import time
 
 from PySide6.QtCore import QMimeData, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap, QPainter
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QFileDialog, QMessageBox, QComboBox, QDoubleSpinBox,
                                QFormLayout, QGroupBox, QLayout, QToolButton,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
                                QPlainTextEdit, QPushButton, QScrollArea, QSlider, QSpinBox,
@@ -149,6 +150,10 @@ class MediaBin(QListWidget):
         menu = QMenu(self)
         if items:
             menu.addAction(_("Add to Timeline"), lambda: self._add_at_playhead(items))
+            m0 = self.main.project.media.get(items[0].data(Qt.UserRole))
+            if m0 is not None and m0.kind != "audio":
+                menu.addAction("🎨 " + _("Use as Color Reference"),
+                               lambda: self.main.set_color_reference_media(m0))
             menu.addAction(_("Remove from Project"),
                            lambda: self.main.remove_media([i.data(Qt.UserRole) for i in items]))
             menu.addSeparator()
@@ -312,6 +317,74 @@ class EffectBox(QGroupBox):
                 rl.addWidget(btn, 1)
                 rl.addWidget(drop)
                 form.addRow(_(label), row)
+            elif kind == "file":
+                btn = QPushButton(os.path.basename(val) if val else _("Choose .cube file…"))
+                btn.setToolTip(val or "")
+                btn.clicked.connect(lambda _c=False, k=key, b=btn: self._pick_file(k, b))
+                form.addRow(_(label), btn)
+        if effect["type"] == "color_match":
+            self._build_color_match(form)
+
+    def _build_color_match(self, form):
+        p = self.effect["params"]
+        name = p.get("ref_name")
+        info = QLabel(_("Reference") + ": " + (name or _("none yet")))
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#9ec1ff;" if name else "color:#e0a050;")
+        form.addRow(info)
+        pal = p.get("ref_palette") or []
+        if pal:
+            strip = QWidget()
+            sl = QHBoxLayout(strip)
+            sl.setContentsMargins(0, 0, 0, 0)
+            sl.setSpacing(3)
+            for col in pal:
+                sw = QLabel()
+                sw.setFixedHeight(22)
+                sw.setToolTip(col)
+                sw.setStyleSheet(f"background:{col}; border-radius:3px;")
+                sl.addWidget(sw, 1)
+            form.addRow(strip)
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        pick = QPushButton(_("Reference…"))
+        pick.setToolTip(_("Pick an image or video from the project as the color reference"))
+        pick.clicked.connect(lambda: self.ins.main.pick_color_reference_menu(self.clip, pick))
+        again = QPushButton(_("Re-analyze"))
+        again.setToolTip(_("Measure the clip again (e.g. after changing a LUT before this effect)"))
+        again.clicked.connect(lambda: self.ins.main.reanalyze_color_match(self.clip))
+        rl.addWidget(pick, 1)
+        rl.addWidget(again, 1)
+        form.addRow(row)
+        if not name:
+            hint = QLabel(_("Tip: right-click an image in the Project panel → Use as Color "
+                            "Reference, then right-click clips → Apply Color Palette."))
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color:#80868b;")
+            form.addRow(hint)
+
+    def _pick_file(self, key, btn):
+        m = self.ins.main
+        start = m.settings.value("lut_dir", os.path.expanduser("~"))
+        path, _f = QFileDialog.getOpenFileName(self, _("Choose .cube file…"), start,
+                                               "LUT (*.cube *.CUBE)")
+        if not path:
+            return
+        from .. import effects as _fx
+        try:
+            _fx.load_cube(path)
+        except Exception as e:
+            QMessageBox.warning(self, "LUT", str(e))
+            return
+        m.settings.setValue("lut_dir", os.path.dirname(path))
+        m.before_edit()
+        self.effect["params"][key] = path
+        btn.setText(os.path.basename(path))
+        btn.setToolTip(path)
+        # Sonraki renk eşleştirme, LUT'lu görüntüye göre yeniden ölçülsün
+        m.reanalyze_color_match(self.clip, push=False, quiet=True)
+        m.on_edited(refresh_inspector=False)
 
     @staticmethod
     def _paint_swatch(btn, color):

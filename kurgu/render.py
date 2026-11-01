@@ -33,6 +33,27 @@ def ensure_gui_app():
         ensure_gui_app.app = QGuiApplication(sys.argv[:1])
 
 
+def high_bit(frame) -> bool:
+    try:
+        return max(c.bits for c in frame.format.components) > 8
+    except Exception:
+        return False
+
+
+def read_high_bit(frame, w: int, h: int, alpha: bool) -> np.ndarray:
+    """10/12-bit kareyi 16-bit okuyup dither'lı olarak 8-bit'e indirir: kaybolacak ara tonlar
+    ince grene dönüşür, sonradan kontrast açılınca bantlanma oluşmaz."""
+    a = frame.to_ndarray(width=w, height=h, format="rgb48le").astype(np.float32) * (1 / 257)
+    a += fx._dither((h, w))
+    rgb = np.clip(np.rint(a), 0, 255).astype(np.uint8)
+    if not alpha:
+        return rgb
+    out = np.empty((h, w, 4), np.uint8)
+    out[..., :3] = rgb
+    out[..., 3] = 255
+    return out
+
+
 def adjust_color(arr: np.ndarray, clip: Clip) -> np.ndarray:
     if clip.brightness == 0 and clip.contrast == 1 and clip.saturation == 1:
         return arr
@@ -160,12 +181,16 @@ class Compositor:
                                                         or e.get("id") != dis.get("id")))]
         has_alpha = frame.format.name.startswith(ALPHA_FORMATS) or fx.needs_alpha(effects)
         fmt = "rgba" if has_alpha else "rgb24"
-        arr = frame.to_ndarray(width=tw, height=th, format=fmt)
+        hibit = bool(effects) and fx.is_grading(effects) and high_bit(frame)
+        if hibit:
+            arr = read_high_bit(frame, tw, th, has_alpha)
+        else:
+            arr = frame.to_ndarray(width=tw, height=th, format=fmt)
         arr = adjust_color(arr, clip)
         if effects:
             # dizi pikseli / proje pikseli: efekt boyutları önizleme ve çıktıda aynı görünsün
             scale = tw / max(frame.width * fit * clip.scale, 1e-6)
-            arr = fx.apply_effects(arr, effects, {"scale": scale, "t": t})
+            arr = fx.apply_effects(arr, effects, {"scale": scale, "t": t, "hibit": hibit})
         arr = np.ascontiguousarray(arr)
         qfmt = QImage.Format_RGBA8888 if has_alpha else QImage.Format_RGB888
         qimg = QImage(arr.data, tw, th, arr.strides[0], qfmt)

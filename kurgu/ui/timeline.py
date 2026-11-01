@@ -834,6 +834,17 @@ class TimelineWidget(QWidget):
                 self.selection_changed.emit()
             menu.addAction(_("Split at Playhead"), self.main.split_at_playhead)
             menu.addAction(_("Duplicate"), self.main.duplicate_selected)
+            vis = next((c for c in self.project.linked(clip)
+                        if self.project.track_is_video(c.track) and c.kind == "media"), None)
+            if vis is not None:
+                menu.addSeparator()
+                menu.addAction("🎨 " + _("Use as Color Reference"),
+                               lambda: self.main.set_color_reference_clip(vis))
+                ref = self.main.color_ref
+                if ref is not None:
+                    menu.addAction("🎨 " + _("Apply Color Palette") + f"  ({ref['ref_name']})",
+                                   self.main.apply_color_reference)
+                menu.addSeparator()
             vclips = [c for c in self.project.linked(clip) if c.effects]
             if vclips:
                 fxm = menu.addMenu(_("Effects"))

@@ -136,6 +136,25 @@ TR = {
     "Kurgu {new} is available (you have {old}).": "Kurgu {new} yayınlandı (sizdeki: {old}).",
     "Update Now": "Şimdi Güncelle", "Download Page": "İndirme Sayfası", "Later": "Sonra",
     "Downloading update…": "Güncelleme indiriliyor…",
+    "Color Match": "Renk Eşleştirme", "LUT (.cube)": "LUT (.cube)", "LUT File": "LUT Dosyası",
+    "Match Brightness": "Parlaklığı da Eşle", "Choose .cube file…": ".cube dosyası seç…",
+    "Reference": "Referans", "none yet": "henüz seçilmedi", "Reference…": "Referans…",
+    "Re-analyze": "Yeniden Ölç",
+    "Pick an image or video from the project as the color reference":
+        "Projeden renk referansı olacak bir görsel ya da video seçin",
+    "Measure the clip again (e.g. after changing a LUT before this effect)":
+        "Klibi yeniden ölç (ör. bu efektten önceki LUT değişince)",
+    "Tip: right-click an image in the Project panel → Use as Color Reference, then right-click clips → Apply Color Palette.":
+        "İpucu: Proje panelinde bir görsele sağ tık → Renk Referansı Olarak Kullan, sonra kliplere sağ tık → Renk Paletini Uygula.",
+    "Use as Color Reference": "Renk Referansı Olarak Kullan",
+    "Apply Color Palette": "Renk Paletini Uygula",
+    "Color reference copied: {name}. Select clips → right-click → Apply Color Palette.":
+        "Renk referansı kopyalandı: {name}. Klipleri seçin → sağ tık → Renk Paletini Uygula.",
+    "Color palette applied to {n} clip(s)": "Renk paleti {n} klibe uygulandı",
+    "Copied reference": "Kopyalanan referans",
+    "Import an image first (drag it into the Project panel)":
+        "Önce bir görsel içe aktarın (Proje paneline sürükleyin)",
+    "Clip re-analyzed": "Klip yeniden ölçüldü",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

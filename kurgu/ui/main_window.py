@@ -17,7 +17,7 @@ from ..media import probe, thumbnail
 from ..model import History, MediaItem, Project, new_id
 from ..render import export
 from .. import effects as fx
-from .. import autosave, updater
+from .. import autosave, colormatch, updater
 from .. import keyframes as kf
 from ..rendercache import FrameCache, FrameSig, RenderWorker, heavy_frames, heavy_intervals
 from .. import transitions
@@ -171,6 +171,7 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(bin_dock, fx_dock)
         bin_dock.raise_()
         self.clipboard: list = []
+        self.color_ref = None  # "Renk referansı olarak kullan" ile kopyalanan palet
         self._dock(_("Inspector"), self.inspector, Qt.RightDockWidgetArea)
         self.inspector.setMinimumWidth(380)
         self.bin.setMinimumWidth(240)
@@ -982,6 +983,96 @@ class MainWindow(QMainWindow):
         sel = [c for c in self.selected_clips() if c.keyframes]
         if sel:
             self.jump_key(sel[0], None, direction)
+
+    # ------------------------------------------------------------ renk eşleştirme
+    def _busy(self, fn, *a):
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            return fn(*a)
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+
+    def set_color_reference_media(self, media):
+        try:
+            px = self._busy(colormatch.sample_media_pixels, self.project, media)
+        except Exception as e:
+            QMessageBox.warning(self, _("Color Match"), str(e))
+            return
+        self.color_ref = colormatch.reference_from_pixels(px, media.name)
+        self._announce_reference()
+
+    def set_color_reference_clip(self, clip):
+        try:
+            px = self._busy(colormatch.sample_clip_pixels, self.project, clip)
+        except Exception as e:
+            QMessageBox.warning(self, _("Color Match"), str(e))
+            return
+        self.color_ref = colormatch.reference_from_pixels(px, clip.name)
+        self._announce_reference()
+
+    def _announce_reference(self):
+        self.statusBar().showMessage(
+            "🎨 " + _("Color reference copied: {name}. Select clips → right-click → Apply Color "
+                      "Palette.").format(name=self.color_ref["ref_name"]), 10000)
+
+    def apply_color_reference(self, clips=None, ref=None):
+        ref = ref or self.color_ref
+        if ref is None:
+            return
+        targets = []
+        for c in (clips or self.selected_clips()):
+            for x in self.project.linked(c):
+                if self.project.track_is_video(x.track) and x.kind == "media" and x not in targets:
+                    targets.append(x)
+        if not targets:
+            self.statusBar().showMessage(_("Select a clip first"), 4000)
+            return
+        self.before_edit()
+        try:
+            for c in targets:
+                self._busy(colormatch.apply_reference, self.project, c, ref)
+        except Exception as e:
+            self.history.undo_stack.pop()
+            QMessageBox.warning(self, _("Color Match"), str(e))
+            return
+        self.on_edited()
+        idx = next(i for i, e in enumerate(targets[0].effects) if e["type"] == "color_match")
+        self.inspector.focus_effects(idx)
+        self.statusBar().showMessage("🎨 " + _("Color palette applied to {n} clip(s)")
+                                     .format(n=len(targets)), 5000)
+
+    def pick_color_reference_menu(self, clip, anchor):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        if self.color_ref is not None:
+            menu.addAction(_("Copied reference") + f": {self.color_ref['ref_name']}",
+                           lambda: self.apply_color_reference([clip]))
+            menu.addSeparator()
+        for m in self.project.media.values():
+            if m.kind == "audio":
+                continue
+
+            def use(m=m):
+                self.set_color_reference_media(m)
+                if self.color_ref is not None:
+                    self.apply_color_reference([clip])
+            menu.addAction(("🖼 " if m.kind == "image" else "🎞 ") + m.name, use)
+        if menu.isEmpty():
+            menu.addAction(_("Import an image first (drag it into the Project panel)")).setEnabled(False)
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def reanalyze_color_match(self, clip, push=True, quiet=False):
+        effs = [e for e in clip.effects if e["type"] == "color_match" and e["params"].get("ref_mean")]
+        if not effs:
+            return
+        if push:
+            self.before_edit()
+        for e in effs:
+            e["params"].update(self._busy(colormatch.analyze_source, self.project, clip, e))
+        self.on_edited(refresh_inspector=not quiet)
+        if not quiet:
+            self.statusBar().showMessage(_("Clip re-analyzed"), 3000)
 
     def remove_effect(self, clip, index):
         """index None ise tüm efektleri kaldırır."""

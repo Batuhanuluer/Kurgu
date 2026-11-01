@@ -44,6 +44,15 @@ def new_effect(effect_id: str) -> dict:
             "params": {p[0]: p[3] for p in d.params}}
 
 
+# Kontrastı açan/renk eğrisi uygulayan efektler: 10-bit kaynaklarda yüksek bit derinliğinde
+# okunur ki D-Log gibi düz görüntülerde bantlanma olmasın.
+GRADING = {"lut", "color_match", "levels", "temperature", "hue"}
+
+
+def is_grading(effects: list) -> bool:
+    return any(e.get("enabled", True) and e["type"] in GRADING for e in effects)
+
+
 def needs_alpha(effects: list) -> bool:
     return any(e.get("enabled", True) and e["type"] in EFFECTS
                and EFFECTS[e["type"]].needs_alpha for e in effects)
@@ -401,3 +410,127 @@ def flip_h(arr, p, ctx):
 @register("flip_v", "Vertical Flip", "Transform")
 def flip_v(arr, p, ctx):
     return arr[::-1]
+
+
+# ------------------------------------------------------------ renk eşleştirme ve LUT
+_CM_CACHE: dict = {}
+
+
+@register("color_match", "Color Match", "Color Correction", [
+    ("strength", "Amount", "float", 1.0, 0.0, 1.0, 0.05, 2),
+    ("luma", "Match Brightness", "bool", True, 0, 0, 0, 0),
+])
+def color_match(arr, p, ctx):
+    """Referans görselin renklerini klibe aktarır (kaynak/ref istatistikleri parametrelerde)."""
+    keys = ("src_mean", "src_cov", "ref_mean", "ref_cov")
+    if not all(p.get(k) for k in keys):
+        return arr  # henüz referans seçilmedi
+    ck = (tuple(map(tuple, [p["src_mean"], p["ref_mean"]])),
+          tuple(tuple(r) for r in p["src_cov"]), tuple(tuple(r) for r in p["ref_cov"]),
+          round(float(p["strength"]), 4), bool(p["luma"]))
+    m = _CM_CACHE.get(ck)
+    if m is None:
+        from .colormatch import transfer_matrix
+        m = transfer_matrix(p["src_mean"], p["src_cov"], p["ref_mean"], p["ref_cov"],
+                            p["strength"], p["luma"])
+        if len(_CM_CACHE) > 64:
+            _CM_CACHE.clear()
+        _CM_CACHE[ck] = m
+    rgb = arr[..., :3].astype(np.float32)
+    gain = float(np.abs(np.linalg.det(m[:, :3])) ** (1 / 3))
+    if gain > 1.2 and not ctx.get("hibit"):  # 10-bit kaynak zaten dither'lı okundu  # kontrast açılıyorsa: bantlanmayı gizleyen ince dither
+        rgb += _dither(arr.shape[:2])
+    return _put(arr, rgb @ m[:, :3].T + m[:, 3])
+
+
+_DITHER: dict = {}
+
+
+def _dither(shape) -> np.ndarray:
+    """±0.5 düzeyinde sabit (kareden kareye titremeyen) mavi-gürültü benzeri desen."""
+    d = _DITHER.get(shape)
+    if d is None:
+        rng = np.random.default_rng(7)
+        d = (rng.random(shape, dtype=np.float32) + rng.random(shape, dtype=np.float32) - 1.0)
+        d = d[..., None] * 0.6
+        if len(_DITHER) > 6:
+            _DITHER.clear()
+        _DITHER[shape] = d
+    return d
+
+
+_LUT_CACHE: dict = {}
+_LUT_GRID = 128  # 7 bit/kanal: gökyüzü gibi yumuşak geçişlerde bantlanma olmasın
+
+
+def load_cube(path: str) -> np.ndarray:
+    """.cube 3B LUT dosyasını (N, N, N, 3) [r][g][b] float dizi olarak okur."""
+    size, rows = None, []
+    dmin, dmax = np.zeros(3), np.ones(3)
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            up = line.upper()
+            if up.startswith("LUT_3D_SIZE"):
+                size = int(line.split()[1])
+            elif up.startswith("DOMAIN_MIN"):
+                dmin = np.array([float(v) for v in line.split()[1:4]])
+            elif up.startswith("DOMAIN_MAX"):
+                dmax = np.array([float(v) for v in line.split()[1:4]])
+            elif up.startswith(("TITLE", "LUT_1D", "LUT_3D_INPUT")):
+                continue
+            elif line[0].isdigit() or line[0] in "-.":
+                rows.append([float(v) for v in line.split()[:3]])
+    if not size or len(rows) < size ** 3:
+        raise ValueError("Geçersiz ya da desteklenmeyen .cube dosyası (yalnızca 3B LUT)")
+    data = np.array(rows[:size ** 3], np.float32)
+    data = (data - dmin) / np.maximum(dmax - dmin, 1e-9)
+    # .cube sırası: r en hızlı değişir → [b][g][r]; [r][g][b]'ye çevir
+    return data.reshape(size, size, size, 3).transpose(2, 1, 0, 3)
+
+
+def _lut_table(path: str) -> np.ndarray:
+    import os
+    key = (path, os.path.getmtime(path))
+    t = _LUT_CACHE.get(key)
+    if t is None:
+        cube = load_cube(path)
+        n = cube.shape[0]
+        g = np.linspace(0, n - 1, _LUT_GRID, dtype=np.float32)
+        i0 = np.floor(g).astype(np.int32)
+        i1 = np.minimum(i0 + 1, n - 1)
+        f = (g - i0)[:, None]
+        # Ayrık eksenlerde sırayla doğrusal enterpolasyon (= üç doğrusal)
+        c = cube[i0] * (1 - f)[:, None, None] + cube[i1] * f[:, None, None]
+        c = c[:, i0] * (1 - f)[None, :, None] + c[:, i1] * f[None, :, None]
+        c = c[:, :, i0] * (1 - f)[None, None, :] + c[:, :, i1] * f[None, None, :]
+        t = (np.clip(c, 0, 1) * 255 + 0.5).astype(np.uint8).reshape(-1, 3)
+        if len(_LUT_CACHE) > 8:
+            _LUT_CACHE.clear()
+        _LUT_CACHE[key] = t
+    return t
+
+
+@register("lut", "LUT (.cube)", "Color Correction", [
+    ("path", "LUT File", "file", "", 0, 0, 0, 0),
+    ("amount", "Amount", "float", 1.0, 0.0, 1.0, 0.05, 2),
+])
+def lut(arr, p, ctx):
+    """3B LUT uygular (ör. DJI D-Log → Rec.709, sinema görünümleri)."""
+    path = p.get("path")
+    if not path:
+        return arr
+    try:
+        table = _lut_table(path)
+    except (OSError, ValueError):
+        return arr
+    sh = 8 - 7
+    idx = ((arr[..., 0] >> sh).astype(np.uint32) << 14) | \
+        ((arr[..., 1] >> sh).astype(np.uint32) << 7) | (arr[..., 2] >> sh)
+    out = table[idx]
+    if p["amount"] >= 1:
+        arr[..., :3] = out
+        return arr
+    return _mix(arr, out.astype(np.float32), p["amount"])
