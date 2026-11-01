@@ -26,8 +26,9 @@ from .render import Compositor
 class FrameSig:
     """t anındaki karenin içeriğini belirleyen değerlerin özeti."""
 
-    def __init__(self, project: Project):
+    def __init__(self, project: Project, proxy: bool = False):
         self.p = project
+        self.proxy = proxy  # önizleme proxy'den mi okunuyor
         self.comp = Compositor(project, pool=_NullPool())
         self._h: dict[str, str] = {}
 
@@ -35,7 +36,8 @@ class FrameSig:
         h = self._h.get(c.id)
         if h is None:
             m = self.p.media.get(c.media_id)
-            data = json.dumps([asdict(c), m.path if m else ""], sort_keys=True, default=str)
+            px = m.proxy if (m and self.proxy and m.proxy and os.path.exists(m.proxy)) else ""
+            data = json.dumps([asdict(c), m.path if m else "", px], sort_keys=True, default=str)
             h = hashlib.blake2b(data.encode(), digest_size=10).hexdigest()
             self._h[c.id] = h
         return h
@@ -168,10 +170,10 @@ class RenderWorker:
         self.thread.start()
 
     def submit(self, snapshot: Project, frames: list[int], w: int, h: int,
-               progress=None, done=None) -> int:
+               progress=None, done=None, use_proxy: bool = False) -> int:
         with self.cond:
             self.job_id += 1
-            self.job = (self.job_id, snapshot, list(frames), w, h, progress, done)
+            self.job = (self.job_id, snapshot, list(frames), w, h, progress, done, use_proxy)
             self.cond.notify()
             return self.job_id
 
@@ -212,11 +214,12 @@ class RenderWorker:
                     continue
                 job = self.job
                 self.job = None
-            jid, snap, frames, w, h, progress, done = job
+            jid, snap, frames, w, h, progress, done, use_proxy = job
             if self.pool is None:  # medya kimlikleri kopyada korunur: çözücüler yeniden kullanılır
                 self.pool = SourcePool(snap.sample_rate)
+            self.pool.use_proxy = use_proxy
             comp = Compositor(snap, self.pool)
-            sig = FrameSig(snap)
+            sig = FrameSig(snap, use_proxy)
             n = len(frames)
             ok = True
             for i, fi in enumerate(frames):

@@ -230,7 +230,7 @@ class ProgramMonitor(QWidget):
         super().__init__()
         self.main = main
         self.view = VideoView()
-        self.pool = SourcePool()
+        self.pool = SourcePool(use_proxy=main.use_proxy)
         self.comp = None
         self.tc = QLabel("00:00:00:00")
         self.tc.setStyleSheet("color:#4fc3f7; font-family: monospace; font-size: 15px;")
@@ -269,6 +269,15 @@ class ProgramMonitor(QWidget):
         self.res_combo.setCurrentIndex(max(0, self.res_combo.findData(saved)))
         self.res_combo.currentIndexChanged.connect(self._res_changed)
         self.play_factor = self.res_combo.currentData()
+        self.proxy_btn = QToolButton()
+        self.proxy_btn.setText(_("Proxy"))
+        self.proxy_btn.setCheckable(True)
+        self.proxy_btn.setChecked(main.use_proxy)
+        self.proxy_btn.setToolTip(_("Use proxies for preview (light copies of heavy videos). "
+                                    "Export always uses the original files."))
+        self.proxy_btn.toggled.connect(main.set_use_proxy)
+        self.proxy_btn.setStyleSheet("QToolButton:checked { color:#7fd18b; font-weight:bold; }")
+        controls.addWidget(self.proxy_btn)
         controls.addWidget(self.res_combo)
         controls.addWidget(self.dur)
         lay = QVBoxLayout(self)
@@ -292,7 +301,7 @@ class ProgramMonitor(QWidget):
 
     def reset(self):
         self.pool.close()
-        self.pool = SourcePool(self.main.project.sample_rate)
+        self.pool = SourcePool(self.main.project.sample_rate, use_proxy=self.main.use_proxy)
         self.comp = None
 
     # ------------------------------------------------------------ doğrudan düzenleme

@@ -77,10 +77,13 @@ def sample_clip_pixels(project, clip, n_frames: int = 8, pre=None) -> np.ndarray
             f = src.frame_at(min(t, max(m.duration - 0.05, 0.0)) if m.kind != "image" else 0.0)
             if f is None:
                 continue
-            h = max(2, int(f.height * SAMPLE_W / max(f.width, 1)))
+            from .media import display_size, oriented_array
+            k = m.rotation if m.kind == "video" and not getattr(src, "is_proxy", False) else 0
+            fw, fh = display_size(f, k)
+            h = max(2, int(fh * SAMPLE_W / max(fw, 1)))
             fmt = "rgba" if pre is not None or f.format.name.startswith(
                 ("rgba", "bgra", "argb", "abgr", "yuva")) else "rgb24"
-            arr = f.to_ndarray(width=SAMPLE_W, height=h, format=fmt)
+            arr = oriented_array(f, SAMPLE_W, h, fmt, k)
             if pre is not None:
                 arr = pre(arr)
             chunks.append(_pixels(arr))

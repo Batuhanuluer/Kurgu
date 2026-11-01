@@ -155,6 +155,26 @@ TR = {
     "Import an image first (drag it into the Project panel)":
         "Önce bir görsel içe aktarın (Proje paneline sürükleyin)",
     "Clip re-analyzed": "Klip yeniden ölçüldü",
+    "Proxy": "Proxy", "Create Proxy": "Proxy Oluştur", "Delete Proxy": "Proxy'yi Sil",
+    "Use proxies for preview (light copies of heavy videos). Export always uses the original files.":
+        "Önizlemede proxy kullan (ağır videoların hafif kopyaları). Dışa aktarma her zaman orijinal dosyaları kullanır.",
+    "Creating proxies in the background for heavy videos (4K / HEVC / 10-bit)…":
+        "Ağır videolar (4K / HEVC / 10-bit) için arka planda proxy oluşturuluyor…",
+    "Proxies on: preview uses light copies": "Proxy açık: önizleme hafif kopyaları kullanıyor",
+    "Proxies off: preview uses original files": "Proxy kapalı: önizleme orijinal dosyaları kullanıyor",
+    "Creating proxy: {name} {p}%": "Proxy oluşturuluyor: {name} %{p}",
+    "Proxy ready: {name}": "Proxy hazır: {name}", "Proxy failed: {name}": "Proxy oluşturulamadı: {name}",
+    "Auto-create proxies for heavy videos": "Ağır videolar için otomatik proxy oluştur",
+    "Clip mismatch": "Klip uyuşmazlığı",
+    "This clip ({cw}×{ch}) does not match the project ({pw}×{ph}).":
+        "Bu klip ({cw}×{ch}) proje ayarlarıyla ({pw}×{ph}) uyuşmuyor.",
+    "Change the project settings to match the clip? (e.g. vertical phone video → vertical 9:16 project)":
+        "Proje ayarları klibe uydurulsun mu? (ör. dikey telefon videosu → dikey 9:16 proje)",
+    "Change project settings": "Proje ayarlarını değiştir",
+    "Keep existing settings": "Mevcut ayarları koru",
+    "Project set to {w}×{h} @ {fps} fps": "Proje {w}×{h}, {fps} kare/sn olarak ayarlandı",
+    "Scale to Fill Frame": "Kareyi Doldur (boşluksuz)", "Scale to Fit Frame": "Kareye Sığdır",
+    "Match Project to This Clip": "Projeyi Bu Klibe Uydur",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

@@ -838,6 +838,11 @@ class TimelineWidget(QWidget):
                         if self.project.track_is_video(c.track) and c.kind == "media"), None)
             if vis is not None:
                 menu.addSeparator()
+                menu.addAction(_("Scale to Fill Frame"), lambda: self.main.scale_clip(vis, "fill"))
+                menu.addAction(_("Scale to Fit Frame"), lambda: self.main.scale_clip(vis, "fit"))
+                menu.addAction(_("Match Project to This Clip"),
+                               lambda: self.main.match_sequence_to_clip(vis))
+                menu.addSeparator()
                 menu.addAction("🎨 " + _("Use as Color Reference"),
                                lambda: self.main.set_color_reference_clip(vis))
                 ref = self.main.color_ref

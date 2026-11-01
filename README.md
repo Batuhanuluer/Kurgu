@@ -59,14 +59,14 @@ projeler korunur. Diğer sistemlerde indirme sayfası açılır. Yardım menüs�
 ### Yeni sürüm yayınlamak (geliştiriciler için)
 
 ```bash
-git tag v0.6.0
+git tag v0.7.1
 git push --tags
 ```
 
 GitHub Actions üç işletim sisteminde testleri çalıştırır, paketleri derler ve
 Releases sayfasına yükler (`.github/workflows/release.yml`).
 
-## Özellikler (v0.6)
+## Özellikler (v0.7)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -85,6 +85,16 @@ Releases sayfasına yükler (`.github/workflows/release.yml`).
   Zaman çizelgesinde ◆ işaretlerini sürükle; sağ tıkla **Doğrusal / Yumuşak (Ease) /
   Sabit (Hold)** geçiş seç. Anahtarlar kaynağa bağlıdır: klibi bölsen de kırpsan da
   animasyon doğru yerde kalır
+- **Proxy düzenleme:** 4K, H.265/HEVC, ProRes ya da 10-bit (D-Log) videolar içe aktarılınca
+  arka planda hafif bir çalışma kopyası (540p, hızlı atlanan H.264) otomatik oluşturulur;
+  önizleme onu, **dışa aktarma her zaman orijinali** kullanır. Monitördeki **Proxy** düğmesiyle
+  aç/kapa; Proje panelinde ✓P işareti. 10-bit kaynakların proxy'si de 10-bit kalır.
+  Örnek ölçüm: 4K 10-bit HEVC'de oynatma 8 → 28 kare/sn. Proxy'ler: `~/.kurgu/proxies/`
+- **Klip uyuşmazlığı (Premiere gibi):** boş projeye ilk klip konunca boyutu farklıysa
+  "proje ayarlarını klibe uydur" diye sorulur (dikey telefon videosu → dikey 9:16 proje).
+  Klibe sağ tık: **Kareyi Doldur** (boşluksuz) / **Kareye Sığdır** / **Projeyi Bu Klibe Uydur**
+- **Telefon videoları:** dikey çekimler (dönme bilgisi) doğru yönde gösterilir; değişken kare
+  hızlı (VFR) videolarda her an doğru kare seçilir
 - **Akıcı önizleme (Premiere'deki render mantığı):**
   - Cetvelin altındaki çubuk: **kırmızı** = efektli/geçişli, henüz render edilmemiş;
     **yeşil** = hazır. **Enter** (Sekans → Efektleri Render Et) ile kırmızı bölümler
@@ -179,6 +189,7 @@ kurgu/
   colormatch.py   Renk eşleştirme (doğrusal Monge-Kantorovich aktarımı) ve palet çıkarma
   effects.py      Video efektleri (yeni efekt = tek fonksiyon + @register)
   transitions.py  Video geçişleri
+  proxy.py        Proxy üretimi (ağır videoların hafif kopyaları)
   rendercache.py  Render önbelleği, kare imzası, arka plan işçisi
   render.py       Katman birleştirme (QPainter), renk, ses miksajı, MP4 dışa aktarma
   updater.py      Güncelleme denetimi ve Windows'ta kendini güncelleme
@@ -211,7 +222,7 @@ Katkılarınızı bekleyen başlıca konular:
 - [ ] Maskeleme (kalem aracı ile şekil maskesi), iz matı (track matte)
 - [ ] Karıştırma modları (çarp, ekran, kaplama…)
 - [ ] Ses mikseri, ses efektleri, normalizasyon
-- [ ] Proxy (düşük çözünürlüklü kopya) ile düzenleme
+- [x] Proxy (düşük çözünürlüklü kopya) ile düzenleme
 - [ ] GPU hızlandırma (OpenGL/Vulkan ile birleştirme)
 - [ ] Diske kalıcı render dosyaları
 - [ ] Whisper ile otomatik altyazı

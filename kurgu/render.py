@@ -17,7 +17,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 from . import effects as fx
 from . import keyframes as kf
 from . import transitions
-from .media import SourcePool
+from .media import SourcePool, display_size, oriented_array
 from .model import Clip, Project
 
 ALPHA_FORMATS = ("rgba", "bgra", "argb", "abgr", "yuva", "ya8", "ya16", "pal8")
@@ -40,10 +40,10 @@ def high_bit(frame) -> bool:
         return False
 
 
-def read_high_bit(frame, w: int, h: int, alpha: bool) -> np.ndarray:
+def read_high_bit(frame, w: int, h: int, alpha: bool, k: int = 0) -> np.ndarray:
     """10/12-bit kareyi 16-bit okuyup dither'lı olarak 8-bit'e indirir: kaybolacak ara tonlar
     ince grene dönüşür, sonradan kontrast açılınca bantlanma oluşmaz."""
-    a = frame.to_ndarray(width=w, height=h, format="rgb48le").astype(np.float32) * (1 / 257)
+    a = oriented_array(frame, w, h, "rgb48le", k).astype(np.float32) * (1 / 257)
     a += fx._dither((h, w))
     rgb = np.clip(np.rint(a), 0, 255).astype(np.uint8)
     if not alpha:
@@ -170,11 +170,13 @@ class Compositor:
         frame = src.frame_at(st)
         if frame is None:
             return
-        fit = min(p.width / frame.width, p.height / frame.height)
+        rot = media.rotation if media.kind == "video" and not getattr(src, "is_proxy", False) else 0
+        fw, fh = display_size(frame, rot)
+        fit = min(p.width / fw, p.height / fh)
         s = fit * clip.scale * k
-        dw, dh = max(1, int(round(frame.width * s))), max(1, int(round(frame.height * s)))
+        dw, dh = max(1, int(round(fw * s))), max(1, int(round(fh * s)))
         # Döndürme yoksa ve büyütme yapılmıyorsa ölçeklemeyi swscale yapsın (hızlı).
-        tw, th = (dw, dh) if (s <= 1.0 and not clip.rotation) else (frame.width, frame.height)
+        tw, th = (dw, dh) if (s <= 1.0 and not clip.rotation) else (fw, fh)
         dis = self.disabled_effect
         effects = [e for e in clip.effects
                    if dis is None or (e is not dis and (not e.get("id")
@@ -183,13 +185,13 @@ class Compositor:
         fmt = "rgba" if has_alpha else "rgb24"
         hibit = bool(effects) and fx.is_grading(effects) and high_bit(frame)
         if hibit:
-            arr = read_high_bit(frame, tw, th, has_alpha)
+            arr = read_high_bit(frame, tw, th, has_alpha, rot)
         else:
-            arr = frame.to_ndarray(width=tw, height=th, format=fmt)
+            arr = oriented_array(frame, tw, th, fmt, rot)
         arr = adjust_color(arr, clip)
         if effects:
             # dizi pikseli / proje pikseli: efekt boyutları önizleme ve çıktıda aynı görünsün
-            scale = tw / max(frame.width * fit * clip.scale, 1e-6)
+            scale = tw / max(fw * fit * clip.scale, 1e-6)
             arr = fx.apply_effects(arr, effects, {"scale": scale, "t": t, "hibit": hibit})
         arr = np.ascontiguousarray(arr)
         qfmt = QImage.Format_RGBA8888 if has_alpha else QImage.Format_RGB888

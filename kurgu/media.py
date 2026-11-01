@@ -18,6 +18,31 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
 AUDIO_EXT = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".wma"}
 
 
+def rotation_steps(frame) -> int:
+    """Kare yan verisindeki ekran matrisinden 90°'lik dönüş sayısı (np.rot90 k değeri)."""
+    try:
+        r = frame.rotation or 0
+    except Exception:
+        return 0
+    return int(round(r / 90.0)) % 4
+
+
+def display_size(frame, k: int) -> tuple[int, int]:
+    return (frame.height, frame.width) if k % 2 else (frame.width, frame.height)
+
+
+def oriented_array(frame, w: int, h: int, fmt: str, k: int):
+    """Kareyi ekrandaki yönüyle (w×h) dizi olarak verir; telefonların dönme bilgisini uygular."""
+    import numpy as _np
+    if k % 2:
+        arr = frame.to_ndarray(width=h, height=w, format=fmt)
+    else:
+        arr = frame.to_ndarray(width=w, height=h, format=fmt)
+    if k:
+        arr = _np.ascontiguousarray(_np.rot90(arr, k))
+    return arr
+
+
 def probe(path: str) -> MediaItem:
     """Bir dosyanın türünü, süresini ve boyutlarını bulur."""
     ext = os.path.splitext(path)[1].lower()
@@ -40,9 +65,17 @@ def probe(path: str) -> MediaItem:
         if v is None:
             return MediaItem(path=path, kind="audio", duration=duration, has_audio=True)
         fps = float(v.average_rate or v.guessed_rate or 30)
-        return MediaItem(path=path, kind="video", duration=duration,
-                         width=v.codec_context.width, height=v.codec_context.height,
-                         fps=fps, has_video=True, has_audio=a is not None)
+        w, h, k, bits = v.codec_context.width, v.codec_context.height, 0, 8
+        try:  # telefon videoları: dönme bilgisi ilk karede
+            first = next(c.decode(v))
+            k = rotation_steps(first)
+            w, h = display_size(first, k)
+            bits = max(cp.bits for cp in first.format.components)
+        except Exception:
+            pass
+        return MediaItem(path=path, kind="video", duration=duration, width=w, height=h,
+                         fps=fps, has_video=True, has_audio=a is not None, rotation=k,
+                         codec=v.codec_context.name, bit_depth=bits)
 
 
 class VideoSource:
@@ -83,18 +116,21 @@ class VideoSource:
 
     def frame_at(self, t: float) -> av.VideoFrame | None:
         with self.lock:
-            key = round(t * self.fps)
+            # Anahtar milisaniye: değişken kare hızlı (telefon) videolarda da doğru kare
+            key = round(t * 1000)
             if key in self.cache:
                 self.cache.move_to_end(key)
                 return self.cache[key]
-            half = 0.5 / self.fps
+            # O anda ekranda olan kare = zamanı t'yi geçmeyen en son kare (oynatıcılar gibi).
+            # 1 ms pay: kayan nokta yuvarlamasına karşı.
+            eps = 0.001
             need_seek = (self._decoder is None or self._cur is None
-                         or t < self._cur[0] - half or t > self._cur[0] + 2.0)
+                         or t < self._cur[0] - eps or t > self._cur[0] + 2.0)
             if need_seek:
                 self._seek(t)
                 self._next = self._pull()
             # cur: t'den önceki son kare, next: sonraki kare
-            while self._next is not None and self._next[0] <= t + half:
+            while self._next is not None and self._next[0] <= t + eps:
                 self._cur = self._next
                 self._next = self._pull()
             if self._cur is None:
@@ -103,7 +139,7 @@ class VideoSource:
                 return None
             frame = self._cur[1]
             self.cache[key] = frame
-            if len(self.cache) > 48:
+            if len(self.cache) > 96:
                 self.cache.popitem(last=False)
             return frame
 
@@ -211,23 +247,35 @@ class AudioSource:
 
 
 class SourcePool:
-    """Her medya dosyası için açık çözücüleri tutar (her iş parçacığı kendi havuzunu kullanır)."""
+    """Her medya dosyası için açık çözücüleri tutar (her iş parçacığı kendi havuzunu kullanır).
 
-    def __init__(self, sample_rate: int = 48000):
+    use_proxy açıksa ve medyanın hazır bir proxy'si varsa görüntü proxy'den okunur
+    (önizleme). Dışa aktarma her zaman use_proxy=False ile orijinalleri kullanır.
+    """
+
+    def __init__(self, sample_rate: int = 48000, use_proxy: bool = False):
         self.sr = sample_rate
+        self.use_proxy = use_proxy
         self.video: dict[str, object] = {}
         self.audio: dict[str, AudioSource] = {}
         self.failed: set[str] = set()
 
     def video_source(self, media: MediaItem):
-        src = self.video.get(media.id)
-        if src is None and media.id not in self.failed:
+        proxy = bool(self.use_proxy and media.proxy and media.kind == "video"
+                     and os.path.exists(media.proxy))
+        key = media.id + ("/proxy" if proxy else "")
+        src = self.video.get(key)
+        if src is None and key not in self.failed:
             try:
-                src = ImageSource(media.path) if media.kind == "image" else VideoSource(media.path)
+                if media.kind == "image":
+                    src = ImageSource(media.path)
+                else:
+                    src = VideoSource(media.proxy if proxy else media.path)
+                    src.is_proxy = proxy  # proxy'de dönme bilgisi zaten uygulanmış
             except Exception:
-                self.failed.add(media.id)
+                self.failed.add(key)
                 return None
-            self.video[media.id] = src
+            self.video[key] = src
         return src
 
     def audio_source(self, media: MediaItem) -> AudioSource | None:
@@ -259,8 +307,10 @@ def thumbnail(path: str, kind: str, width: int = 160) -> np.ndarray | None:
             if kind == "video" and c.duration:
                 c.seek(int(min(1.0, c.duration / av.time_base / 3) * av.time_base))
             f = next(c.decode(s))
-            h = max(2, int(f.height * width / max(f.width, 1)) // 2 * 2)
-            return f.to_ndarray(width=width, height=h, format="rgb24")
+            k = rotation_steps(f)
+            fw, fh = display_size(f, k)
+            h = max(2, int(fh * width / max(fw, 1)) // 2 * 2)
+            return oriented_array(f, width, h, "rgb24", k)
     except Exception:
         return None
 

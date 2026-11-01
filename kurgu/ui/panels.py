@@ -64,11 +64,33 @@ class MediaBin(QListWidget):
     def rebuild(self):
         self.clear()
         for m in self.main.project.media.values():
-            it = QListWidgetItem(self.icon_for(m), f"{m.name}\n{timecode(m.duration, 30)[:-3]}"
-                                 if m.kind != "image" else m.name)
+            it = QListWidgetItem(self.icon_for(m), self.label_for(m))
             it.setData(Qt.UserRole, m.id)
-            it.setToolTip(m.path)
+            tip = m.path
+            if m.kind == "video":
+                tip += f"\n{m.width}×{m.height} · {m.codec} · {m.bit_depth}-bit"
+                if m.proxy:
+                    tip += "\n" + _("Proxy") + ": " + m.proxy
+            it.setToolTip(tip)
             self.addItem(it)
+
+    def label_for(self, m) -> str:
+        if m.kind == "image":
+            return m.name
+        extra = ""
+        prog = self.main.proxy_progress.get(m.id)
+        if prog is not None:
+            extra = f"  ⏳P {int(prog * 100)}%"
+        elif m.proxy:
+            extra = "  ✓P"
+        return f"{m.name}\n{timecode(m.duration, 30)[:-3]}{extra}"
+
+    def update_labels(self):
+        for i in range(self.count()):
+            it = self.item(i)
+            m = self.main.project.media.get(it.data(Qt.UserRole))
+            if m is not None:
+                it.setText(self.label_for(m))
 
     def icon_for(self, m) -> QIcon:
         pm = QPixmap(144, 81)
@@ -151,6 +173,12 @@ class MediaBin(QListWidget):
         if items:
             menu.addAction(_("Add to Timeline"), lambda: self._add_at_playhead(items))
             m0 = self.main.project.media.get(items[0].data(Qt.UserRole))
+            vids = [self.main.project.media.get(i.data(Qt.UserRole)) for i in items]
+            vids = [v for v in vids if v is not None and v.kind == "video"]
+            if vids:
+                menu.addAction(_("Create Proxy"), lambda: self.main.create_proxies(vids))
+                if any(v.proxy for v in vids):
+                    menu.addAction(_("Delete Proxy"), lambda: self.main.delete_proxies(vids))
             if m0 is not None and m0.kind != "audio":
                 menu.addAction("🎨 " + _("Use as Color Reference"),
                                lambda: self.main.set_color_reference_media(m0))

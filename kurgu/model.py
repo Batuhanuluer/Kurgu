@@ -32,6 +32,10 @@ class MediaItem:
     fps: float = 0.0
     has_audio: bool = False
     has_video: bool = False
+    codec: str = ""
+    bit_depth: int = 8
+    rotation: int = 0  # görüntülerken saat yönünün tersine 90°'lik dönüş sayısı (telefonlar)
+    proxy: str = ""  # hafif çalışma kopyası (önizleme için), boşsa yok
     id: str = field(default_factory=new_id)
 
     def __post_init__(self):

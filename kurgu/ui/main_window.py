@@ -156,6 +156,12 @@ class MainWindow(QMainWindow):
         self._snap_ver = -1
         self._prefetch = None
         self._render_status = (None, [])
+        self.use_proxy = self.settings.value("use_proxy", True, type=bool)
+        self.proxy_progress: dict[str, float] = {}
+        from .proxyman import ProxyManager
+        self.proxies = ProxyManager(self)
+        self.proxies.progress.connect(self._proxy_progress)
+        self.proxies.finished.connect(self._proxy_finished)
         self.player = Player(self)
         self.timeline_panel = TimelinePanel(self)
         self.timeline = self.timeline_panel.timeline
@@ -305,6 +311,9 @@ class MainWindow(QMainWindow):
         tools.addAction(self.select_tool)
         tools.addAction(self.razor_tool)
         self.select_tool.setChecked(True)
+        ap = self._act(v, _("Auto-create proxies for heavy videos"),
+                       lambda on: self.settings.setValue("auto_proxy", on), checkable=True)
+        ap.setChecked(self.settings.value("auto_proxy", True, type=bool))
         snap = self._act(v, _("Snapping"), self.toggle_snap, "S", True)
         snap.setChecked(True)
         v.addSeparator()
@@ -458,6 +467,7 @@ class MainWindow(QMainWindow):
             items.append(m)
         if items:
             self.dirty = True
+            self.auto_proxy(items)
             self.bin.rebuild()
             self._update_title()
         if errors:
@@ -490,9 +500,68 @@ class MainWindow(QMainWindow):
                 vt = track_hint
             else:
                 at = track_hint
+        first = not any(p.track_is_video(c.track) for c in p.clips)
         self.before_edit()
+        if first and self._mismatch(m):
+            self._ask_match_sequence(m)
         made = p.place_media(m, t, vt, at)
         self.timeline.selected = {c.id for c in made}
+        self.on_edited()
+
+    # ------------------------------------------------------------ sekans / klip boyutu
+    def _mismatch(self, m) -> bool:
+        if m.kind not in ("video", "image") or not m.width or not m.height:
+            return False
+        p = self.project
+        return (m.width // 2 * 2, m.height // 2 * 2) != (p.width, p.height)
+
+    def _ask_match_sequence(self, m):
+        """Premiere'deki "Klip uyuşmazlığı" sorusu: boş sekansa ilk klip konunca."""
+        p = self.project
+        box = QMessageBox(self)
+        box.setWindowTitle(_("Clip mismatch"))
+        box.setText(_("This clip ({cw}×{ch}) does not match the project ({pw}×{ph})."
+                      ).format(cw=m.width, ch=m.height, pw=p.width, ph=p.height))
+        box.setInformativeText(_("Change the project settings to match the clip? "
+                                 "(e.g. vertical phone video → vertical 9:16 project)"))
+        change = box.addButton(_("Change project settings"), QMessageBox.AcceptRole)
+        box.addButton(_("Keep existing settings"), QMessageBox.RejectRole)
+        box.setDefaultButton(change)
+        box.exec()
+        if box.clickedButton() is change:
+            self._match_sequence_to(m)
+
+    def _match_sequence_to(self, m):
+        p = self.project
+        p.width, p.height = m.width // 2 * 2, m.height // 2 * 2
+        if m.kind == "video" and m.fps and 1 <= m.fps <= 240:
+            p.fps = round(m.fps, 3)
+        self.monitor.comp = None
+        self.cache.clear()
+        self.statusBar().showMessage(_("Project set to {w}×{h} @ {fps} fps").format(
+            w=p.width, h=p.height, fps=round(p.fps, 3)), 5000)
+
+    def match_sequence_to_clip(self, clip):
+        m = self.project.media.get(clip.media_id)
+        if m is None:
+            return
+        self.before_edit()
+        self._match_sequence_to(m)
+        self.on_edited()
+
+    def scale_clip(self, clip, mode: str):
+        """'fill': boşluk kalmadan kareyi doldur (kenarlar kırpılır), 'fit': tamamı görünsün."""
+        p = self.project
+        m = p.media.get(clip.media_id)
+        if m is None or not m.width:
+            return
+        fit = min(p.width / m.width, p.height / m.height)
+        fill = max(p.width / m.width, p.height / m.height)
+        value = round(fill / fit, 4) if mode == "fill" else 1.0
+        self.before_edit()
+        self.prop_edit(clip, "scale", value, push=False)
+        if not kf.is_animated(clip, "pos_x"):
+            clip.pos_x = clip.pos_y = 0.0
         self.on_edited()
 
     # ------------------------------------------------------------ düzenleme
@@ -812,6 +881,76 @@ class MainWindow(QMainWindow):
         b.done.connect(finished)
         threading.Thread(target=work, daemon=True).start()
 
+    # ------------------------------------------------------------ proxy
+    def auto_proxy(self, media_items):
+        from .. import proxy as px
+        for m in media_items:
+            if m.kind != "video":
+                continue
+            if not m.proxy:
+                m.proxy = px.existing_proxy(m)
+            if not m.proxy and px.needs_proxy(m) and \
+                    self.settings.value("auto_proxy", True, type=bool):
+                self.proxy_progress[m.id] = 0.0
+                self.proxies.enqueue(m)
+        if self.proxy_progress:
+            self.statusBar().showMessage(_("Creating proxies in the background for heavy videos "
+                                           "(4K / HEVC / 10-bit)…"), 6000)
+
+    def create_proxies(self, media_items):
+        for m in media_items:
+            if not m.proxy:
+                self.proxy_progress[m.id] = 0.0
+                self.proxies.enqueue(m)
+        self.bin.update_labels()
+
+    def delete_proxies(self, media_items):
+        for m in media_items:
+            self.proxies.cancel(m.id)
+            self.proxy_progress.pop(m.id, None)
+            if m.proxy:
+                try:
+                    os.remove(m.proxy)
+                except OSError:
+                    pass
+                m.proxy = ""
+        self._proxy_changed()
+
+    def set_use_proxy(self, on: bool):
+        self.use_proxy = bool(on)
+        self.settings.setValue("use_proxy", self.use_proxy)
+        self.monitor.pool.use_proxy = self.use_proxy
+        self._proxy_changed()
+        self.statusBar().showMessage(_("Proxies on: preview uses light copies") if on else
+                                     _("Proxies off: preview uses original files"), 3000)
+
+    def _proxy_changed(self):
+        self.version += 1  # önbellek imzası proxy durumunu içerir
+        self._render_status = (None, [])
+        self.bin.update_labels()
+        if not self.player.playing:
+            self.monitor.refresh(self.timeline.playhead)
+        self.timeline.update()
+
+    def _proxy_progress(self, media_id, frac):
+        self.proxy_progress[media_id] = frac
+        self.bin.update_labels()
+        m = self.project.media.get(media_id)
+        if m is not None:
+            self.statusBar().showMessage(
+                _("Creating proxy: {name} {p}%").format(name=m.name, p=int(frac * 100)), 2000)
+
+    def _proxy_finished(self, media_id, path, err):
+        self.proxy_progress.pop(media_id, None)
+        m = self.project.media.get(media_id)
+        if m is not None and path:
+            m.proxy = path
+            self.statusBar().showMessage(_("Proxy ready: {name}").format(name=m.name), 4000)
+        elif m is not None and err and err != "cancelled":
+            self.statusBar().showMessage(_("Proxy failed: {name}").format(name=m.name)
+                                         + f" ({err})", 8000)
+        self._proxy_changed()
+
     # ------------------------------------------------------------ otomatik kaydetme
     def set_autosave_interval(self, minutes: int):
         self.settings.setValue("autosave_min", minutes)
@@ -880,7 +1019,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ render önbelleği
     def frame_sig(self) -> FrameSig:
         if self._sig is None or self._sig_ver != self.version or self._sig.p is not self.project:
-            self._sig = FrameSig(self.project)
+            self._sig = FrameSig(self.project, self.use_proxy)
             self._sig_ver = self.version
         return self._sig
 
@@ -902,7 +1041,7 @@ class MainWindow(QMainWindow):
         last = int(self.project.duration * self.project.fps)
         frames = list(range(fi + 1, min(fi + 1 + ahead, last + 1)))
         if frames:
-            self.worker.submit(self.snapshot(), frames, w, h)
+            self.worker.submit(self.snapshot(), frames, w, h, use_proxy=self.use_proxy)
             self._prefetch = (self.version, w, h, frames[-1], fi)
 
     def render_status(self):
@@ -959,7 +1098,7 @@ class MainWindow(QMainWindow):
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setMinimumDuration(0)
         bridge.prog.connect(lambda i, n: dlg.setValue(i))
-        jid = self.worker.submit(self.snapshot(), frames, w, h,
+        jid = self.worker.submit(self.snapshot(), frames, w, h, use_proxy=self.use_proxy,
                                  progress=lambda i, n: bridge.prog.emit(i, n),
                                  done=lambda ok: bridge.fin.emit(ok))
         dlg.canceled.connect(self.worker.cancel)
@@ -1285,6 +1424,12 @@ class MainWindow(QMainWindow):
         self.worker.reset_sources()
         self.version += 1
         missing = [m.name for m in p.media.values() if not os.path.exists(m.path)]
+        for m in p.media.values():  # proxy taşınmış/silinmiş olabilir
+            if m.proxy and not os.path.exists(m.proxy):
+                m.proxy = ""
+        self.proxy_progress.clear()
+        self.proxies.cancel()
+        self.auto_proxy([m for m in p.media.values() if os.path.exists(m.path)])
         for m in p.media.values():
             self._make_thumb(m)
         self.dirty = p.recovered
@@ -1422,6 +1567,7 @@ class MainWindow(QMainWindow):
             return
         self.player.pause()
         self.worker.shutdown()
+        self.proxies.shutdown()
         self.autosave_timer.stop()
         self.session.end()  # düzgün kapanış: çökme kurtarma önerilmesin
         self.settings.setValue("geometry", self.saveGeometry())
