@@ -30,9 +30,20 @@ STYLE_DEFAULTS = {
     "box_color": "#000000",
     "box_opacity": 0.55,
     "y": 0.90,             # alt kenarın konumu (0 üst, 1 alt)
+    "x": 0.5,              # yatay orta nokta (0 sol, 1 sağ); monitörde sürükleyerek
     "width": 0.86,         # en çok satır genişliği / kare genişliği
     "bold": True,
+    "uppercase": False,
+    # Kelime vurgusu (Reels/TikTok tarzı): konuşulan kelime renklenir ya da kutulanır
+    "highlight": False,
+    "highlight_color": "#ffd60a",
+    "highlight_box": False,
 }
+
+# "Reels Stili" hazır ayarı: büyük, kalın, ortada, kutusuz; konuşulan kelime sarı kutuda
+REELS_STYLE = {"size": 0.075, "y": 0.68, "width": 0.8, "bold": True, "outline": True,
+               "box": False, "uppercase": True, "highlight": True,
+               "highlight_color": "#ffd60a", "highlight_box": True, "color": "#ffffff"}
 
 
 def style_of(track) -> dict:
@@ -46,6 +57,7 @@ class Cue:
     start: float
     end: float
     text: str
+    words: list | None = None  # [[başla, bitir, kelime], ...] blok başına göre (isteğe bağlı)
 
 
 # ------------------------------------------------------------ SRT / VTT
@@ -138,7 +150,9 @@ def words_to_cues(words, max_chars: int = 42, max_lines: int = 2,
             text = " ".join(w[2].strip() for w in cur).strip()
             text = re.sub(r"\s+([,.!?;:])", r"\1", text)
             if text:
-                cues.append(Cue(cur[0][0], cur[-1][1], wrap_text(text, max_chars, max_lines)))
+                t0 = cur[0][0]
+                ws = [[round(w[0] - t0, 3), round(w[1] - t0, 3), w[2].strip()] for w in cur]
+                cues.append(Cue(t0, cur[-1][1], wrap_text(text, max_chars, max_lines), ws))
         cur.clear()
 
     for w in words:
@@ -158,6 +172,92 @@ def words_to_cues(words, max_chars: int = 42, max_lines: int = 2,
         nxt = cues[i + 1].start if i + 1 < len(cues) else c.end + 2
         c.end = min(max(c.end, c.start + 0.8), nxt - 0.04) if nxt > c.start + 0.1 else c.end
     return cues
+
+
+def words_by_count(words, max_words: int = 3, max_gap: float = 0.6,
+                   max_dur: float = 2.5) -> list[Cue]:
+    """Kısa öbekler (Reels tarzı): en çok max_words kelime; cümle sonu ya da duraklamada
+    yeni öbek. words: [(başla, bitir, kelime), ...] mutlak zamanlı."""
+    groups: list[list] = []
+    cur: list = []
+    for w in words:
+        s, e, t = float(w[0]), float(w[1]), str(w[2]).strip()
+        if not t:
+            continue
+        if cur and (len(cur) >= max_words or s - cur[-1][1] > max_gap
+                    or e - cur[0][0] > max_dur):
+            groups.append(cur)
+            cur = []
+        cur.append((s, e, t))
+        if t.endswith((".", "?", "!", "…", ",")):
+            groups.append(cur)
+            cur = []
+    if cur:
+        groups.append(cur)
+    cues = []
+    for i, g in enumerate(groups):
+        t0 = g[0][0]
+        nxt = groups[i + 1][0][0] if i + 1 < len(groups) else None
+        end = max(g[-1][1], t0 + 0.4)
+        if nxt is not None:
+            end = min(end, nxt)  # bir sonrakine çarpmasın
+            if nxt - g[-1][1] < 0.35:  # kısa boşluk: ekranda boşluk yanıp sönmesin
+                end = nxt
+        text = re.sub(r"\s+([,.!?;:])", r"\1", " ".join(x[2] for x in g))
+        cues.append(Cue(t0, end, text, [[round(x[0] - t0, 3), round(x[1] - t0, 3), x[2]]
+                                        for x in g]))
+    return cues
+
+
+def clip_words(clip) -> list:
+    """Altyazı klibinin metnindeki her kelimenin (yerel) zamanı: [[başla, bitir, kelime]].
+    Metin elle değiştirildiyse kelime sayısı tutmaz; o zaman süre kelimelere eşit bölünür
+    (uzun kelime biraz daha uzun kalır)."""
+    tokens = (clip.text or "").split()
+    if not tokens:
+        return []
+    ws = clip.words or []
+    if len(ws) == len(tokens):
+        return [[float(w[0]), float(w[1]), tok] for w, tok in zip(ws, tokens)]
+    dur = max(float(clip.out_point), 1e-3)
+    weights = np.array([len(t) + 2 for t in tokens], np.float64)
+    edges = np.concatenate([[0.0], np.cumsum(weights) / weights.sum() * dur])
+    return [[float(edges[i]), float(edges[i + 1]), tok] for i, tok in enumerate(tokens)]
+
+
+def active_word(clip, t: float) -> int:
+    """t anında konuşulan kelimenin sırası (henüz başlamadıysa -1)."""
+    local = t - clip.start + clip.in_point
+    idx = -1
+    for i, w in enumerate(clip_words(clip)):
+        if local + 1e-6 >= w[0]:
+            idx = i
+        else:
+            break
+    return idx
+
+
+def rechunk(project, track: int, max_words: int = 3) -> list:
+    """Bir altyazı izini kelime zamanlarından kısa öbeklere yeniden böler."""
+    words = []
+    for c in sorted((c for c in project.clips if c.track == track and c.kind == "caption"),
+                    key=lambda c: c.start):
+        base = c.start - c.in_point
+        for s, e, w in clip_words(c):
+            if base + s < c.end - 1e-6:  # bölünmüş kliplerde görünmeyen kelimeler alınmaz
+                if base + s >= c.start - 1e-6:
+                    words.append((base + s, min(base + e, c.end), w))
+    if not words:
+        return []
+    return project.add_captions(words_by_count(words, max_words), track, replace=True)
+
+
+def upper(text: str) -> str:
+    """Büyük harf; Türkçe metinde i → İ, ı → I."""
+    from .i18n import LANG
+    if LANG == "tr" or any(ch in text for ch in "ığşİĞŞ"):
+        text = text.replace("i", "İ").replace("ı", "I")
+    return text.upper()
 
 
 def segments_to_cues(segments, max_chars=42, max_lines=2) -> list[Cue]:

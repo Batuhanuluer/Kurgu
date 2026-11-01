@@ -72,14 +72,29 @@ def _excepthook(exc_type, exc, tb):
         return
     _shown.add(key)
     from PySide6.QtWidgets import QMessageBox
-    QMessageBox.warning(None, "Kurgu", f"{key}\n\nLog: {LOG_PATH}")
+    from .i18n import _
+    box = QMessageBox(QMessageBox.Warning, "Kurgu",
+                      _("Something went wrong. Your project was saved to the auto-save "
+                        "folder.") + f"\n\n{key}")
+    from PySide6.QtCore import Qt
+    box.setTextFormat(Qt.PlainText)
+    rep = box.addButton(_("Report a Problem…"), QMessageBox.ActionRole)
+    box.addButton(QMessageBox.Ok)
+    box.exec()
+    if box.clickedButton() is rep:
+        from .ui.report_dialog import ReportDialog
+        ReportDialog(None, text).exec()
 
 
 def install_qt_translations(app):
-    """Qt'nin kendi düğmeleri (İptal, Evet/Hayır, dosya pencereleri) sistem dilinde olsun."""
+    """Qt'nin kendi düğmeleri (İptal, Evet/Hayır, dosya pencereleri) arayüz dilinde olsun."""
     from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+    from . import i18n
+    lang = i18n.effective()
+    if lang == "en":
+        return
     tr = QTranslator(app)
-    if tr.load(QLocale.system(), "qtbase", "_",
+    if tr.load(QLocale(lang), "qtbase", "_",
                QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
         app.installTranslator(tr)
         app._kurgu_qt_tr = tr  # çöp toplayıcı silmesin

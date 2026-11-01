@@ -187,3 +187,92 @@ w.dirty = False; w.close(); print('OK')
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
                        timeout=180)
     assert "OK" in r.stdout, r.stdout[-2000:] + r.stderr[-3000:]
+
+
+# ------------------------------------------------------------ kelime vurgusu (Reels)
+def test_words_kept_and_active_word():
+    from kurgu import captions as cap
+    from kurgu.model import Project
+    words = [(1.0, 1.3, " Merhaba"), (1.35, 1.6, " dünya,"), (1.7, 2.0, " bugün"),
+             (2.05, 2.4, " hava"), (2.45, 2.9, " güzel.")]
+    cues = cap.words_to_cues(words)
+    assert cues[0].words and cues[0].words[0] == [0.0, 0.3, "Merhaba"]
+    p = Project(640, 360, 25.0)
+    c = p.add_captions(cues)[0]
+    assert len(c.words) == 5
+    assert cap.active_word(c, 0.9 + c.start - 1.0) == -1
+    assert cap.active_word(c, c.start + 0.4) == 1
+    assert cap.active_word(c, c.start + 1.5) == 4
+    # Metin elle değişince kelimelere eşit dağıtılır
+    c.text = "Selam herkese"
+    ws = cap.clip_words(c)
+    assert [w[2] for w in ws] == ["Selam", "herkese"] and abs(ws[-1][1] - c.out_point) < 1e-6
+    # Kısa öbekler
+    short = cap.words_by_count(words, 2)
+    assert [s.text for s in short] == ["Merhaba dünya,", "bugün hava", "güzel."]
+    assert short[1].words[0][0] == 0.0 and short[0].end <= short[1].start
+    assert cap.upper("istanbul ışık") == "İSTANBUL IŞIK"
+
+
+def test_rechunk_and_highlight_render(qapp):
+    from kurgu import captions as cap
+    from kurgu.media import SourcePool
+    from kurgu.model import Project
+    from kurgu.render import Compositor
+    p = Project(640, 360, 25.0)
+    words = [(0.0, 0.5, "AAAA"), (0.5, 1.0, "BBBB"), (1.0, 1.5, "CCCC"), (1.5, 2.0, "DDDD")]
+    p.add_captions([cap.Cue(0.0, 2.0, "AAAA BBBB CCCC DDDD",
+                            [[a, b, w] for a, b, w in words])])
+    ti = p.caption_track(create=False)
+    made = cap.rechunk(p, ti, 2)
+    assert [c.text for c in made] == ["AAAA BBBB", "CCCC DDDD"]
+    assert abs(made[1].start - 1.0) < 1e-6 and made[1].words[0][0] == 0.0
+    p.tracks[ti].style.update(cap.REELS_STYLE)
+    p.tracks[ti].style["highlight_box"] = False
+    comp = Compositor(p, SourcePool())
+
+    def yellow_x(t):
+        img = comp.compose(t, 640, 360)
+        xs = [x for x in range(0, 640, 2) for y in range(200, 260, 3)
+              if (lambda c: c.red() > 200 and c.green() > 180 and c.blue() < 90)(
+                  img.pixelColor(x, y))]
+        return (min(xs) + max(xs)) / 2 if xs else None
+    a, b = yellow_x(0.2), yellow_x(0.7)
+    assert a is not None and b is not None and b > a + 40  # vurgu sağdaki kelimeye geçti
+    p.tracks[ti].style["highlight"] = False
+    assert yellow_x(0.7) is None
+
+
+def test_reels_button_gui(tmp_path):
+    import os, subprocess, sys
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = f"""
+import sys; sys.path.insert(0, {root!r})
+from PySide6.QtWidgets import QApplication, QMessageBox; app = QApplication([])
+QMessageBox.exec = lambda self: 0
+import kurgu.ui.player as pl; pl.HAVE_AUDIO = False
+from kurgu import captions as cap
+from kurgu.ui.main_window import MainWindow
+w = MainWindow(None); w.resize(1400, 900); w.show(); app.processEvents()
+ws = [[i * 0.4, i * 0.4 + 0.35, f'k{{i}}'] for i in range(7)]
+w.project.add_captions([cap.Cue(0.0, 2.8, ' '.join(x[2] for x in ws), ws)])
+w.on_edited()
+cp = w.captions_panel; cp.refresh()
+cp.apply_reels()
+ti = w.project.caption_track(create=False)
+st = cap.style_of(w.project.tracks[ti])
+assert st['highlight'] and st['uppercase'] and cp.hl.isChecked() and cp.upper.isChecked()
+cs = cp.clips()
+assert [c.text for c in cs] == ['k0 k1 k2', 'k3 k4 k5', 'k6'], [c.text for c in cs]
+cp.words.setValue(1); cp.split_phrases(1)
+assert len(cp.clips()) == 7
+w.undo(); w.undo()
+assert len(w.captions_panel.clips()) == 1
+assert not cap.style_of(w.project.tracks[ti])['highlight']
+w.dirty = False; w.close(); print('OK')
+"""
+    env = dict(os.environ, HOME=str(tmp_path), QT_QPA_PLATFORM="offscreen",
+               USERPROFILE=str(tmp_path))
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                       timeout=180)
+    assert "OK" in r.stdout, r.stdout[-2000:] + r.stderr[-3000:]

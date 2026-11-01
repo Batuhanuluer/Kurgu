@@ -16,7 +16,7 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri            # GPU ile çözme/kodlama
-  - --socket=pulseaudio     # ses çalma
+  - --socket=pulseaudio     # ses çalma ve mikrofon (seslendirme kaydı)
   - --share=network         # güncelleme denetimi, Whisper modeli indirme
   - --filesystem=home       # medya dosyaları ve projeler
   - --filesystem=xdg-videos

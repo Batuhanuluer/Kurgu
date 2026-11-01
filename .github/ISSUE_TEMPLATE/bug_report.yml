@@ -1,0 +1,50 @@
+name: Bug report · Hata bildirimi
+description: Something doesn't work as expected · Bir şey beklendiği gibi çalışmıyor
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tip: **Help → Report a Problem…** inside Kurgu fills in the system details for you.
+        İpucu: Kurgu'da **Yardım → Sorun Bildir…** sistem bilgilerini sizin için doldurur.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? · Ne oldu?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce · Tekrarlama adımları
+      placeholder: |
+        1. Import a 4K HEVC video from an iPhone
+        2. Add Lumetri Color
+        3. Export with the YouTube 4K preset
+  - type: input
+    id: version
+    attributes:
+      label: Kurgu version · Kurgu sürümü
+      placeholder: "0.10.0 (Help → About Kurgu)"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system · İşletim sistemi
+      options: [Windows 11, Windows 10, macOS (Apple Silicon), macOS (Intel), Linux, Other]
+    validations:
+      required: true
+  - type: input
+    id: media
+    attributes:
+      label: Media format · Medya biçimi
+      description: Resolution, codec, frame rate, source (camera / phone / screen recorder)
+      placeholder: "3840×2160 HEVC 10-bit 60 fps, iPhone 15"
+  - type: textarea
+    id: log
+    attributes:
+      label: Error message or log · Hata mesajı / günlük
+      description: Paste the error text. Personal folder names can be replaced with ~.
+      render: text

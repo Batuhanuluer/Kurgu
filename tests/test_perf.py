@@ -1,11 +1,13 @@
 """Performans: kalıcı render dosyaları, donanım çözme/kodlama geri dönüşü."""
 import os
+import sys
 import time
 
 import numpy as np
 from PySide6.QtGui import QColor, QImage
 
-from kurgu import hw
+sys.path.insert(0, os.path.dirname(__file__))
+from kurgu import hw  # noqa: E402
 from kurgu.media import SourcePool, VideoSource, probe
 from kurgu.model import Project
 from kurgu.rendercache import FrameCache, FrameSig, RenderWorker
@@ -113,3 +115,51 @@ def test_pool_uses_hw_open(monkeypatch, red_video):
     assert pool.video_source(m).frame_at(0.1) is not None
     assert calls == [red_video]
     pool.close()
+
+
+def test_long_audio_read_is_linear(tmp_path):
+    """Uzun kaydı tek seferde okumak doğrusal sürmeli (eskiden karesel: 10 dk = 188 sn)."""
+    from test_audio import write_audio
+    sr = 48000
+    x = np.zeros((90 * sr, 2), np.float32)
+    x[::1000] = 0.5
+    path = write_audio(tmp_path / "long.wav", x)
+    p = Project()
+    made = p.place_media(p.add_media(probe(path)), 0.0)
+    a = [c for c in made if not p.track_is_video(c.track)][0]
+    from kurgu.render import Compositor
+    comp = Compositor(p, SourcePool())
+    t = time.perf_counter()
+    d = comp._clip_samples(a, comp.pool.audio_source(p.media[a.media_id]), 0.0, 90 * sr)
+    assert time.perf_counter() - t < 3.0
+    assert d.shape == (90 * sr, 2) and abs(float(d[89 * sr // 1000 * 1000, 0]) - 0.5) < 0.01
+
+
+def test_mask_alpha_cached_and_downscaled_matches(qapp):
+    from kurgu import masks as mk
+    from kurgu.effects import blur_array
+    m = mk.new_mask("ellipse")
+    m["feather"] = 60
+    mk._CACHE.clear()
+    a = mk.mask_alpha([m], 1920, 1080, 1.0)
+    t = time.perf_counter()
+    b = mk.mask_alpha([m], 1920, 1080, 1.0)
+    assert b is a and time.perf_counter() - t < 0.01
+    exact = blur_array(mk._raster(m, 1920, 1080, 0), 30)
+    assert float(np.abs(a - exact).max()) < 0.05  # küçültülmüş yumuşatma görünür fark yok
+
+
+def test_parallel_rows_equal_serial():
+    from kurgu import grading as g
+    from kurgu import parallel
+    p = g.defaults()
+    p.update(exposure=0.4, saturation=130, vibrance=20, curve_master=[[0, 0], [0.5, 0.6], [1, 1]])
+    a = np.random.default_rng(3).integers(0, 256, (1100, 1000, 4), dtype=np.uint8)
+    x = g.apply(a.copy(), p, None)
+    old = parallel.WORKERS
+    try:
+        parallel.WORKERS = 1
+        y = g.apply(a.copy(), p, None)
+    finally:
+        parallel.WORKERS = old
+    assert np.array_equal(x, y)

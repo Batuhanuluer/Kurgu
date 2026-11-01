@@ -6,9 +6,17 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame, QGroup
                                QHBoxLayout, QLabel, QPushButton, QToolButton, QVBoxLayout,
                                QWidget)
 
+from .. import keyframes as kf
 from .. import masks as mk
 from ..i18n import _
-from .panels import SliderRow
+from .panels import AnimRow, SliderRow
+
+ANIM_KEYS = ("feather", "expansion", "opacity")
+
+
+def path_key(mask: dict) -> str:
+    """Maske yolunun anahtarlanan değeri: çokgende noktalar, diğerlerinde kutu."""
+    return "points" if mask.get("shape") == "polygon" else "box"
 
 SHAPES = [("ellipse", "Ellipse", "◯"), ("rect", "Rectangle", "▭"), ("polygon", "Pen", "✒")]
 MODES = [("add", "Add"), ("subtract", "Subtract"), ("intersect", "Intersect")]
@@ -39,13 +47,23 @@ class MaskRow(QFrame):
         rm.clicked.connect(lambda: panel.remove_mask(mask["id"]))
         head.addWidget(rm)
         form.addRow(head)
+        mid = mask["id"]
+        self.anim_rows = []
+        path = AnimRow(panel.ins, lambda: f"mask.{mid}.{path_key(mask)}", None,
+                       _("drag on the monitor"))
+        path.setToolTip(_("Animate the mask shape: turn on the stopwatch, then move the "
+                          "playhead and reshape the mask"))
+        form.addRow(_("Mask Path"), path)
+        self.anim_rows.append(path)
         for key, label, lo, hi, step, dec, suf in (
                 ("feather", "Feather", 0, 500, 1, 0, " px"),
                 ("expansion", "Expansion", -300, 300, 1, 0, " px"),
                 ("opacity", "Mask Opacity", 0, 1, 0.05, 2, "")):
             sl = SliderRow(lo, hi, step, dec, lambda v, k=key: self._set(k, float(v)), suf)
             sl.set_value(float(mask.get(key, 0.0 if key != "opacity" else 1.0)))
-            form.addRow(_(label), sl)
+            row_ = AnimRow(panel.ins, lambda k=key: f"mask.{mid}.{k}", sl)
+            self.anim_rows.append(row_)
+            form.addRow(_(label), row_)
         row = QHBoxLayout()
         inv = QCheckBox(_("Inverted"))
         inv.setChecked(bool(mask.get("invert")))
@@ -60,6 +78,12 @@ class MaskRow(QFrame):
         form.addRow(row)
 
     def _set(self, key, value):
+        if self.panel._loading:
+            return
+        if key in ANIM_KEYS:  # animasyonluysa oynatma kafasında anahtar kare
+            self.panel.main.prop_edit(self.clip, f"mask.{self.mask['id']}.{key}", value)
+            self.panel.main.monitor.view.update()
+            return
         self.panel.edit(("mask", self.mask["id"], key))
         self.mask[key] = value
         self.panel.changed()
@@ -108,7 +132,7 @@ class MaskPanel(QGroupBox):
     # ------------------------------------------------------------
     def set_clip(self, clip):
         self.clip = clip
-        visual = clip is not None and clip.kind == "media" and \
+        visual = clip is not None and clip.kind in ("media", "nest") and \
             self.main.project.track_is_video(clip.track)
         self.setVisible(visual)
         if not visual:
@@ -139,8 +163,22 @@ class MaskPanel(QGroupBox):
                 w.hide()
                 w.setParent(None)  # hemen kaldır: eski satır yenisinin üstünde kalmasın
                 w.deleteLater()
+        self.rows = []
         for i, m in enumerate(self.clip.masks if self.clip else []):
-            self.list.addWidget(MaskRow(self, self.clip, m, i))
+            r = MaskRow(self, self.clip, m, i)
+            self.rows.append(r)
+            self.list.addWidget(r)
+        self.sync_time(self.main.timeline.playhead)
+
+    def sync_time(self, t):
+        if self.clip is None:
+            return
+        self._loading = True
+        fps = self.main.project.fps
+        for r in getattr(self, "rows", []):
+            for a in r.anim_rows:
+                a.sync(self.clip, t, fps)
+        self._loading = False
 
     def edit(self, key):
         self.ins._push_coalesced((self.clip.id, key))
@@ -196,6 +234,9 @@ class MaskPanel(QGroupBox):
 
     def remove_mask(self, mid):
         self.main.before_edit()
+        for m in self.clip.masks:
+            if m["id"] == mid:
+                kf.drop_mask_keys(self.clip, m)
         self.clip.masks = [m for m in self.clip.masks if m["id"] != mid]
         self._rebuild()
         self.changed()

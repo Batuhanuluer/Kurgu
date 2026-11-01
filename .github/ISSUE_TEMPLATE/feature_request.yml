@@ -1,0 +1,22 @@
+name: Feature request · Özellik isteği
+description: Suggest an idea for Kurgu · Kurgu için bir fikir önerin
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do? · Ne yapmak istiyorsunuz?
+      description: Describe the task or the problem, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How should it work? · Nasıl çalışmalı?
+      description: If another editor does this well (Premiere, Resolve, CapCut…), say how.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing · Katkı
+      options:
+        - label: I'd like to help build this · Bunu yapmaya yardım etmek isterim

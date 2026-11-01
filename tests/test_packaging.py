@@ -79,3 +79,19 @@ def test_flatpak_manifest():
     for s in srcs:
         if s["type"] == "file":
             assert os.path.exists(os.path.join(ROOT, "packaging", "flatpak", s["path"]))
+
+
+def test_macos_plist_patch(tmp_path):
+    import plistlib
+    sys.path.insert(0, os.path.join(ROOT, "packaging"))
+    import build
+    app = tmp_path / "Kurgu.app" / "Contents"
+    app.mkdir(parents=True)
+    with open(app / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleIdentifier": "org.kurgu.Kurgu"}, f)
+    build.patch_macos_plist(str(tmp_path / "Kurgu.app"), "1.2.3")
+    with open(app / "Info.plist", "rb") as f:
+        info = plistlib.load(f)
+    assert info["NSMicrophoneUsageDescription"] and info["CFBundleShortVersionString"] == "1.2.3"
+    ent = open(os.path.join(ROOT, "packaging", "macos", "entitlements.plist")).read()
+    assert "audio-input</key>\n    <true/>" in ent

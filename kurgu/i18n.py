@@ -1,7 +1,8 @@
-"""Basit çeviri sistemi. Anahtarlar İngilizce; sistem dili Türkçe ise Türkçe gösterilir.
+"""Basit çeviri sistemi. Anahtarlar İngilizce; çeviri yoksa İngilizce gösterilir.
 
-Yeni bir dil eklemek için LANGS sözlüğüne bir sözlük eklemek yeterli.
-KURGU_LANG ortam değişkeni ile dil zorlanabilir (ör. KURGU_LANG=en).
+Dil seçimi: KURGU_LANG ortam değişkeni > Tercihler'de seçilen dil > sistem dili.
+Yeni bir dil eklemek: kurgu/locales/<kod>.py içinde bir sözlük, sonra LANGS ve LANGUAGES'a
+ekleyin (CONTRIBUTING.md → Translations).
 """
 import locale
 import os
@@ -359,6 +360,38 @@ TR = {
     "Feather": "Yumuşatma",
     "Expansion": "Genişletme",
     "Mask Opacity": "Maske Opaklığı",
+    "Mask Path": "Maske Yolu",
+    "UPPERCASE": "BÜYÜK HARF",
+    "Word Highlight": "Kelime Vurgusu",
+    "Reels Style": "Reels Stili",
+    "Big centered captions in short phrases; the spoken word is highlighted": "Kısa öbeklerde büyük, ortalı altyazı; konuşulan kelime vurgulanır",
+    "Highlight the spoken word": "Konuşulan kelimeyi vurgula",
+    "Box behind the word": "Kelimenin arkasında kutu",
+    "words": "kelime",
+    "Split": "Böl",
+    "Re-split all captions into short phrases using the word timing": "Tüm altyazıları kelime zamanlarına göre kısa öbeklere yeniden böl",
+    "Short phrases": "Kısa öbekler",
+    "No captions yet": "Henüz altyazı yok",
+    "Track": "İz",
+    "Record Voiceover": "Seslendirme Kaydı",
+    "Record Voiceover…": "Seslendirme Kaydet…",
+    "Record voiceover on this track": "Bu ize seslendirme kaydet",
+    "No microphone found": "Mikrofon bulunamadı",
+    "Input": "Giriş",
+    "New audio track": "Yeni ses izi",
+    "Mute timeline audio while recording": "Kayıt sırasında zaman çizelgesi sesini kapat",
+    "Prevents the speakers from being recorded again (echo)": "Hoparlör sesinin tekrar kaydedilmesini (yankı) önler",
+    "3-second countdown": "3 saniye geri sayım",
+    "Record": "Kaydet",
+    "Stop": "Durdur",
+    "Recording starts at the playhead ({tc}) and the video plays while you speak. Use headphones for the best result.": "Kayıt oynatma kafasından ({tc}) başlar, siz konuşurken video oynar. En iyi sonuç için kulaklık kullanın.",
+    "Recording… press Stop when you are done.": "Kaydediliyor… bitince Durdur'a basın.",
+    "Nothing was recorded. Check the microphone and try again.": "Hiçbir şey kaydedilmedi. Mikrofonu kontrol edip tekrar deneyin.",
+    "Saved: {name}": "Kaydedildi: {name}",
+    "Could not open the microphone. Check that it is connected and that Kurgu is allowed to use it.": "Mikrofon açılamadı. Bağlı olduğunu ve Kurgu'nun mikrofonu kullanma izni olduğunu kontrol edin.",
+    "drag on the monitor": "monitörde sürükleyin",
+    "Animate the mask shape: turn on the stopwatch, then move the playhead and reshape the mask": "Maske şeklini canlandır: kronometreyi açın, oynatma kafasını taşıyıp maskeyi yeniden şekillendirin",
+    "Animate this wheel (stopwatch)": "Bu tekerleği canlandır (kronometre)",
     "Inverted": "Ters",
     "Opacity & Masks": "Opaklık ve Maskeler",
     "Blend Mode": "Karıştırma Modu",
@@ -418,6 +451,27 @@ TR = {
     "GPU decoders": "GPU çözücüler",
     "none": "yok",
     "GPU encoder": "GPU kodlayıcı",
+    "An export is still running. Cancel it and quit?": "Dışa aktarma hâlâ sürüyor. İptal edip çıkılsın mı?",
+    "Measuring loudness…": "Ses yüksekliği ölçülüyor…",
+    "Report a Problem": "Sorun Bildir",
+    "Report a Problem…": "Sorun Bildir…",
+    "Describe what you did and what went wrong. Nothing is sent automatically: the report opens in your browser on GitHub and you can edit it first. Personal folder names are hidden.": "Ne yaptığını ve neyin ters gittiğini yaz. Hiçbir şey otomatik gönderilmez: rapor tarayıcında GitHub'da açılır, göndermeden önce düzenleyebilirsin. Kişisel klasör adları gizlenir.",
+    "Short title, e.g. 'Export stops at 50%'": "Kısa başlık, ör. 'Dışa aktarma %50'de duruyor'",
+    "What were you doing? What did you expect?": "Ne yapıyordun? Ne olmasını bekliyordun?",
+    "This will be included (you can edit it):": "Rapora eklenecekler (düzenleyebilirsin):",
+    "Copy to Clipboard": "Panoya Kopyala",
+    "Open on GitHub": "GitHub'da Aç",
+    "Close": "Kapat",
+    "Something went wrong. Your project was saved to the auto-save folder.": "Bir şeyler ters gitti. Projen otomatik kayıt klasörüne kaydedildi.",
+    "Nest…": "İç İçe Sekans Yap…",
+    "Open Nested Sequence": "İç İçe Sekansı Aç",
+    "Un-nest (restore clips)": "İç İçe Sekansı Çöz (klipleri geri koy)",
+    "Back": "Geri",
+    "Return to the parent sequence": "Üst sekansa dön",
+    "Select clips to nest": "İç içe sekans yapmak için klipleri seç",
+    "Nested Sequence": "İç İçe Sekans",
+    "Main Sequence": "Ana Sekans",
+    "Back to Parent Sequence": "Üst Sekansa Dön",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",
@@ -426,13 +480,35 @@ TR = {
         "için aradaki boşluğu kapatın.",
 }
 
-LANGS = {"tr": TR}
+TR.update({"Ripple": "Ripple", "Roll": "Roll", "Slip": "Slip",
+           "Interface language": "Arayüz dili", "System default": "Sistem varsayılanı",
+           "Restart Kurgu to apply the new language.":
+               "Yeni dilin uygulanması için Kurgu'yu yeniden başlatın.",
+           "Restart Now": "Şimdi Yeniden Başlat"})
+
+from .locales.es import ES  # noqa: E402
+
+LANGS = {"tr": TR, "es": ES}
+# Tercihlerde gösterilen diller (kendi dillerinde yazılır)
+LANGUAGES = [("en", "English"), ("tr", "Türkçe"), ("es", "Español")]
+
+
+def saved_language() -> str:
+    """Tercihlerde seçilen dil ("" = sistem)."""
+    try:
+        from PySide6.QtCore import QSettings
+        return str(QSettings("Kurgu", "Kurgu").value("language", "") or "")
+    except Exception:
+        return ""
 
 
 def _detect() -> str:
     env = os.environ.get("KURGU_LANG")
     if env:
         return env[:2].lower()
+    saved = saved_language()
+    if saved:
+        return saved[:2].lower()
     try:
         from PySide6.QtCore import QLocale
         return QLocale.system().name()[:2].lower()
@@ -443,6 +519,18 @@ def _detect() -> str:
 
 LANG = _detect()
 _TABLE = LANGS.get(LANG, {})
+
+
+def set_language(code: str):
+    """Dili değiştirir (zaten oluşturulmuş pencereler yeniden başlatınca güncellenir)."""
+    global LANG, _TABLE
+    LANG = (code or "en")[:2].lower()
+    _TABLE = LANGS.get(LANG, {})
+
+
+def effective() -> str:
+    """Gerçekten gösterilen dil (çevirisi yoksa İngilizce)."""
+    return LANG if LANG in LANGS else "en"
 
 
 def _(text: str) -> str:

@@ -6,8 +6,8 @@ import threading
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QObject
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF, QPainterPath, QCursor
-from PySide6.QtWidgets import (QHBoxLayout, QMenu, QScrollBar, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QMenu, QScrollBar, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import keyframes as kf
 from ..i18n import _
@@ -26,7 +26,7 @@ MAGNET_PX = 18  # komşunun üzerine bu kadar binerse kenarına dayan (üzerine 
 
 COLORS = {
     "video": QColor("#3d6fb6"), "image": QColor("#2f8f86"), "audio": QColor("#3f8a4e"),
-    "text": QColor("#8a55b5"), "missing": QColor("#8a3a3a"), "caption": QColor("#b58a2a"),
+    "text": QColor("#8a55b5"), "missing": QColor("#8a3a3a"), "caption": QColor("#b58a2a"), "nest": QColor("#2f8f9f"),
 }
 
 
@@ -483,6 +483,8 @@ class TimelineWidget(QWidget):
             col = COLORS["text"]
         elif c.kind == "caption":
             col = COLORS["caption"]
+        elif c.kind == "nest":
+            col = COLORS["nest"]
         elif media is None:
             col = COLORS["missing"]
         elif is_audio_track:
@@ -512,6 +514,8 @@ class TimelineWidget(QWidget):
             ("T  " if c.kind == "text" else "") + c.text.replace("\n", " ")
         if c.mc and self.project.track_is_video(c.track):
             label = f"[{c.mc_angle + 1}] {label}"
+        if c.kind == "nest":
+            label = "⧉ " + label
         if abs(c.speed - 1) > 1e-3:
             label += f"  [{c.speed:.2f}x]"
         p.drawText(QRectF(text_x, inner.top(), inner.width() - 6, 15),
@@ -986,7 +990,9 @@ class TimelineWidget(QWidget):
 
     def mouseDoubleClickEvent(self, ev):
         clip = self.clip_at(ev.position())
-        if clip is not None and clip.kind == "caption":
+        if clip is not None and clip.kind == "nest":
+            self.main.enter_nest(clip)
+        elif clip is not None and clip.kind == "caption":
             self.main.edit_caption(clip)
         elif clip is not None and clip.kind == "text":
             self.main.edit_title(clip)
@@ -1080,8 +1086,14 @@ class TimelineWidget(QWidget):
                 self.selection_changed.emit()
             menu.addAction(_("Split at Playhead"), self.main.split_at_playhead)
             menu.addAction(_("Duplicate"), self.main.duplicate_selected)
+            menu.addAction("⧉ " + _("Nest…"), lambda: self.main.nest_selected())
+            if clip.kind == "nest":
+                menu.addAction("⧉ " + _("Open Nested Sequence"),
+                               lambda: self.main.enter_nest(clip))
+                menu.addAction(_("Un-nest (restore clips)"), lambda: self.main.unnest(clip))
             vis = next((c for c in self.project.linked(clip)
-                        if self.project.track_is_video(c.track) and c.kind == "media"), None)
+                        if self.project.track_is_video(c.track) and c.kind in ("media", "nest")),
+                       None)
             if vis is not None:
                 menu.addSeparator()
                 menu.addAction(_("Scale to Fill Frame"), lambda: self.main.scale_clip(vis, "fill"))
@@ -1239,6 +1251,22 @@ class TimelinePanel(QWidget):
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
+        # İç içe sekans yolu: "Ana Sekans ▸ İç İçe 1"  [◀ Geri]
+        self.crumbs = QWidget()
+        cl = QHBoxLayout(self.crumbs)
+        cl.setContentsMargins(8, 2, 8, 2)
+        self.back = QToolButton()
+        self.back.setText("◀ " + _("Back"))
+        self.back.setToolTip(_("Return to the parent sequence"))
+        self.back.clicked.connect(lambda: main.exit_nest())
+        self.path = QLabel()
+        self.path.setTextFormat(Qt.PlainText)
+        self.path.setStyleSheet("color:#7fd3df; font-weight:bold;")
+        cl.addWidget(self.back)
+        cl.addWidget(self.path, 1)
+        self.crumbs.setStyleSheet("background:#1d2b2e;")
+        self.crumbs.setVisible(False)
+        col.addWidget(self.crumbs)
         col.addWidget(self.timeline, 1)
         col.addWidget(self.bar)
         lay = QHBoxLayout(self)
@@ -1247,6 +1275,11 @@ class TimelinePanel(QWidget):
         lay.addLayout(tools)
         lay.addLayout(col, 1)
         self._syncing = False
+
+    def set_crumbs(self, names):
+        """names: ["Ana Sekans", "İç İçe 1", ...]; tek elemanlıysa çubuk gizlenir."""
+        self.crumbs.setVisible(len(names) > 1)
+        self.path.setText("  ▸  ".join(names))
 
     def sync_scrollbar(self):
         tl = self.timeline

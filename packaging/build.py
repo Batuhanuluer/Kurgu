@@ -105,6 +105,7 @@ def archive(ver: str) -> list[str]:
             out.append(setup)
     elif sys.platform == "darwin":
         app = os.path.join(DIST, "Kurgu.app")
+        patch_macos_plist(app, ver)
         sign_macos(app)
         z = os.path.join(DIST, f"Kurgu-{ver}-macos.zip")
         # ditto, .app içindeki sembolik bağları ve izinleri korur
@@ -171,10 +172,31 @@ def appimage(ver: str, arch: str) -> str | None:
 
 
 # ------------------------------------------------------------ macOS: imza, noter, dmg
+MIC_TEXT = "Kurgu uses the microphone only when you record a voiceover."
+
+
+def patch_macos_plist(app: str, ver: str):
+    """Info.plist: sürüm ve mikrofon izni açıklaması (yoksa macOS seslendirmede uygulamayı
+    kapatır)."""
+    import plistlib
+    path = os.path.join(app, "Contents", "Info.plist")
+    with open(path, "rb") as f:
+        info = plistlib.load(f)
+    info["NSMicrophoneUsageDescription"] = MIC_TEXT
+    info["CFBundleShortVersionString"] = ver
+    info["CFBundleVersion"] = ver
+    info["NSHighResolutionCapable"] = True
+    with open(path, "wb") as f:
+        plistlib.dump(info, f)
+
+
 def sign_macos(app: str):
     ident = os.environ.get("MACOS_SIGN_IDENTITY")
     if not ident:
         print("macOS imza kimliği yok: imzasız paketleniyor (Gatekeeper uyarısı görülebilir)")
+        # Info.plist değişti: Apple Silicon'da çalışabilmesi için yeniden geçici imza
+        if shutil.which("codesign"):
+            subprocess.check_call(["codesign", "--force", "--deep", "--sign", "-", app])
         return
     ent = os.path.join(ROOT, "packaging", "macos", "entitlements.plist")
     subprocess.check_call(["codesign", "--force", "--deep", "--options", "runtime",

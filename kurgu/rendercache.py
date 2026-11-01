@@ -39,8 +39,10 @@ class FrameSig:
             px = m.proxy if (m and self.proxy and m.proxy and os.path.exists(m.proxy)) else ""
             style = self.p.tracks[c.track].style if (c.kind == "caption" and
                                                      c.track < len(self.p.tracks)) else None
+            nest = (self.p.nests.get(c.nest) or {}).get("hash") if c.kind == "nest" else None
             data = json.dumps([asdict(c), m.path if m else "", _file_id(m.path) if m else "",
-                               px, self.p.media_offset(c), style], sort_keys=True, default=str)
+                               px, self.p.media_offset(c), style, nest, self.proxy],
+                              sort_keys=True, default=str)
             h = hashlib.blake2b(data.encode(), digest_size=10).hexdigest()
             self._h[c.id] = h
         return h

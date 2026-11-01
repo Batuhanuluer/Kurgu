@@ -3,7 +3,11 @@
 **Özgür, açık kaynak ve platformlar arası video düzenleyici.**
 *Free, open-source, cross-platform video editor.* Windows · macOS · Linux
 
-![Kurgu ekran görüntüsü](docs/ekran.png)
+![Kurgu: kaynak ve program monitörü, zaman çizelgesi, denetçi](docs/screenshots/editing.png)
+
+| Lumetri Renk ve skoplar | Reels tarzı altyazı ve ses mikseri |
+|---|---|
+| ![Lumetri Renk](docs/screenshots/color.png) | ![Altyazılar](docs/screenshots/captions.png) |
 
 "Kurgu", Türkçede film montajının adıdır. Amacımız, herkesin para ödemeden ve
 hesap açmadan kullanabileceği, Python bilen herkesin katkı verebileceği,
@@ -18,11 +22,22 @@ sayfasından işletim sisteminize uygun dosyayı indirin. Python kurmanız gerek
 |---|---|---|
 | Windows | `Kurgu-…-setup.exe` | Çalıştırın, ileri ileri. `.kurgu` dosyaları çift tıklayınca açılır |
 | Windows (taşınabilir) | `Kurgu-…-windows.zip` | Klasöre çıkarın, `Kurgu.exe`'ye çift tıklayın |
-| macOS | `Kurgu-…-macos.dmg` | Açın, `Kurgu`'yu Uygulamalar'a sürükleyin. İmzasız sürümde ilk açılışta **sağ tık → Aç** |
+| macOS | `Kurgu-…-macos.dmg` | Açın, `Kurgu`'yu Uygulamalar'a sürükleyin. İmzasız sürümde ilk açılış için aşağıya bakın |
 | macOS (zip) | `Kurgu-…-macos.zip` | Çıkarın, `Kurgu.app`'i Uygulamalar'a taşıyın |
 | Linux (AppImage) | `Kurgu-…-x86_64.AppImage` | Tek dosya: `chmod +x Kurgu-*.AppImage` ve çalıştırın |
 | Linux (tar.gz) | `Kurgu-…-linux-x86_64.tar.gz` | Çıkarın, `Kurgu/Kurgu` dosyasını çalıştırın. Ubuntu/Debian'da gerekirse: `sudo apt install libxcb-cursor0` |
 | Linux (Flatpak) | `packaging/flatpak/` | `flatpak-builder --user --install build-dir packaging/flatpak/org.kurgu.Kurgu.yml` |
+
+### macOS: "Apple could not verify Kurgu" uyarısı
+
+Sürüm Apple Developer ID ile imzalanmadıysa macOS ilk açılışta uygulamayı engeller
+(yeni sürümlerde "sağ tık → Aç" yeterli olmaz). Bir kerelik:
+
+1. Uyarıda **Done** (Bitti) deyin, **Move to Trash** demeyin.
+2. **Sistem Ayarları → Gizlilik ve Güvenlik** → en altta "Kurgu engellendi" yanında **Yine de Aç**.
+3. Kurgu'yu yeniden açıp **Aç**'ı seçin.
+
+Ya da Terminal'de: `xattr -dr com.apple.quarantine /Applications/Kurgu.app`
 
 ## Kaynaktan çalıştırma
 
@@ -97,7 +112,12 @@ python packaging/sign_release.py v0.8.1   # her sürümden sonra (GitHub CLI "gh
 Gizli anahtar `~/.kurgu-signing/` klasöründe kalır; depoya ya da GitHub'a yüklenmez.
 Ayrıntılar: [SECURITY.md](SECURITY.md).
 
-## Özellikler (v0.9)
+## Özellikler (v0.10)
+
+**v0.10'da yeni:** iç içe sekanslar, maske yolu ve renk tekerleği anahtar kareleri,
+seslendirme kaydı, Reels tarzı kelime vurgulu altyazı, monitörde tıkla-sürükle (başlık ve
+altyazı), uygulama içi dil seçimi ve İspanyolca arayüz.
+
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -109,7 +129,8 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   birlikte düzenlenir, kesme karesi program monitöründe görünür
 - **Lumetri Renk (Shift+6):** sıcaklık/ton, pozlama, kontrast, parlak alanlar/gölgeler,
   beyazlar/siyahlar, doygunluk, canlılık, **Otomatik** düzeltme; RGB / R / G / B **eğrileri**;
-  gölge / orta ton / parlak alan **renk tekerlekleri**. Hızlı: 720p karede 13–27 ms
+  gölge / orta ton / parlak alan **renk tekerlekleri** (her biri ⏱ ile anahtar karelenebilir).
+  Hızlı: 720p karede 13–27 ms
 - **Lumetri Skopları (Shift+7):** dalga formu (luma), RGB parade, vektörskop (hedefler ve cilt
   tonu çizgisi), histogram. *Görünüm → Renk Çalışma Alanı* ikisini birlikte açar
 - **Çoklu kamera:** Proje panelinde kameraları seç → sağ tık → *Çoklu Kamera Kaynak Sekansı
@@ -120,9 +141,15 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   12 dil + otomatik algılama, kelime zamanlarına göre dengeli 2 satır. SRT/VTT içe ve dışa
   aktarma, listeden düzenleme, iz bazında stil (boyut, konum, renk, kutu, kontur). Model ilk
   kullanımda indirilir (`~/.kurgu/models`), sonrası internetsiz çalışır
+- **Reels / TikTok tarzı altyazı:** *Altyazılar → Kelime Vurgusu → ✨ Reels Stili*: büyük, ortalı,
+  BÜYÜK HARF, 1–8 kelimelik kısa öbekler; konuşulan kelime renklenir ya da renkli kutuya girer.
+  Kelime zamanları konuşma tanımadan gelir, metni elle değiştirsen de vurgu çalışır.
+  Altyazıyı program monitöründe tutup istediğin yere sürükleyebilirsin
 - **Maskeler:** elips, dikdörtgen ve **kalem** (serbest çokgen); yumuşatma, genişletme, opaklık,
   ters, ekle/çıkar/kesişim. Program monitöründe sürükleyerek düzenlenir, klip taşınınca maske de
-  onunla gider
+  onunla gider. **Maske yolu anahtar karesi:** ⏱ aç, oynatma kafasını taşı, maskeyi yeniden
+  şekillendir: maske kareler arasında yumuşakça kayar (elle nesne takibi). Yumuşatma, genişletme
+  ve maske opaklığı da canlandırılabilir
 - **Karıştırma modları (13):** çarp, ekran, kaplama, koyulaştır, açıklaştır, renk soldurma/yanması,
   sert/yumuşak ışık, fark, dışlama, ekle. **İz matı:** başka bir izin alfa ya da parlaklığıyla kes
 - **Ses İzi Mikseri (Shift+9):** iz başına seviye göstergesi, fader, pan, sessiz/solo, ana çıkış
@@ -130,6 +157,15 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   uğultu giderici (50/60 Hz ve harmonikleri), de-esser. Parça parça işlemede kesintisiz
 - **Ses yüksekliğini eşitle:** BS.1770 LUFS ölçümüyle YouTube -14, podcast -16, TV -23 LUFS ya da
   tepe -1 dBFS
+- **İç içe sekanslar (Nest):** klipleri seç → *Sekans → İç İçe Sekans Yap…* ya da sağ tık.
+  Tek klip gibi taşınır, kırpılır, efekt ve maske alır; çift tıklayınca içine girilir (üstte
+  "Ana › Sahne 1" yolu, Ctrl+Backspace ile geri). İçeride yapılan değişiklikler dışarıya yansır
+  ve dışarıda tek geri alma adımıdır. İç içe sekans içinde iç içe sekans da olur;
+  sağ tık → *Çöz* ile klipler geri açılır
+- **Seslendirme kaydı (Shift+R):** *Sekans → Seslendirme Kaydet…* ya da mikserde izin 🎙
+  düğmesi. 3 saniye geri sayım, oynatma kafasından itibaren video oynarken mikrofon kaydı,
+  seviye göstergesi; durdurunca WAV proje dosyasının yanındaki `Voiceover/` klasörüne yazılır
+  ve klip kaydın başladığı yere yerleşir. Yankı olmasın diye kayıtta zaman çizelgesi sesi kapalı
 - **Bağlı klipler:** videonun görüntüsü ve sesi birlikte hareket eder, istenirse ayrılır
 - **Sınırsız geri al / yinele**
 - **Program monitörü:** sesli gerçek zamanlı oynatma, J/K/L ile hızlı ileri/geri
@@ -174,8 +210,9 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   üstünde ne kadar kaydırdığın görünür (ör. +00:00:00:05). S tuşu mıknatısı açar/kapatır
 - **Mıknatıslı jilet:** jilet aracı başka izdeki kenarlara yaklaşınca yapışır, sarı kılavuz
   çizgi hizayı gösterir
-- **Program monitöründe doğrudan düzenleme:** seçili klibi fareyle sürükleyerek taşı,
-  köşelerinden çekerek ölçekle (kronometre açıksa anahtar kare oluşur)
+- **Program monitöründe doğrudan düzenleme:** görüntüde bir başlığa, videoya ya da altyazıya
+  tıkla, seçilir; sürükleyerek taşı, köşelerinden çekerek ölçekle (kronometre açıksa anahtar
+  kare oluşur). Altyazılar ortaya yaklaşınca ortaya yapışır
 - **Renk eşleştirme (Premiere Lumetri "Color Match" gibi):** Pinterest'ten ya da bir filmden
   aldığın bir kareyi Proje paneline bırak → sağ tık **Renk Referansı Olarak Kullan** → kliplerini
   seç → sağ tık **Renk Paletini Uygula**. Görselin renk dağılımı (ortalama + renkler arası ilişki)
@@ -215,7 +252,10 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
   işlenir (bantlanmasız). Zaman çizelgesinde **I / O** ile aralık işaretleyip yalnız onu dışa aktar.
   Farklı en-boy oranında siyah kenar eklenir. **Kareyi Dışa Aktar** (Ctrl+Shift+E): PNG/JPEG
 - **Proje dosyası:** okunabilir JSON (`.kurgu`), klasör taşınsa da medyayı bulur
-- **Arayüz dili:** sistem diline göre Türkçe veya İngilizce
+- **Arayüz dili:** Türkçe, English, Español. *Düzen → Tercihler → Arayüz dili* ile seçilir
+  (varsayılan: sistem dili). Yeni dil eklemek için [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Sorun bildir:** *Yardım → Sorun Bildir…* sistem bilgisini ekler, kişisel klasör adlarını
+  gizler ve GitHub'da hazır doldurulmuş bir kayıt açar; hiçbir şey otomatik gönderilmez
 
 ## Klavye kısayolları
 
@@ -235,6 +275,8 @@ Ayrıntılar: [SECURITY.md](SECURITY.md).
 | Shift+6 / Shift+7 / Shift+9 | Lumetri Renk / Lumetri Skopları / Ses İzi Mikseri |
 | Ctrl+Shift+E | Kareyi dışa aktar |
 | Ctrl+, | Tercihler |
+| Shift+R | Seslendirme kaydı |
+| Ctrl+Backspace | İç içe sekanstan üst sekansa dön |
 | Esc | Kalem maskesini iptal et |
 | , / . | Kaynaktan ekle / üzerine yaz (oynatma kafasına) |
 | Ctrl+K | Oynatma kafasında böl |
@@ -280,13 +322,14 @@ kurgu/
   grading.py      Lumetri renk düzeltme (ton tablosu, eğriler, tekerlekler, 16 bit yol)
   masks.py        Maskeler, karıştırma modları, iz matı
   multicam.py     Çoklu kamera: sesten eşitleme (FFT çapraz korelasyon)
-  captions.py     Altyazılar: SRT/VTT, satır bölme, Whisper ile konuşma tanıma
+  captions.py     Altyazılar: SRT/VTT, satır bölme, kelime vurgusu, Whisper ile konuşma tanıma
+  recorder.py     Seslendirme kaydı (mikrofon → WAV)
   audio.py        Ses efektleri (FIR EQ, dinamikler), pan, LUFS ölçümü
   exporter.py     Dışa aktarma biçimleri, hazır ayarlar, 10-bit, GIF paleti
   hw.py           Donanım (GPU) ile çözme ve kodlama
   updater.py      Güncelleme denetimi ve Windows'ta kendini güncelleme
   autosave.py     Otomatik kaydetme, oturum kilidi, çökme kurtarma
-  i18n.py         Çeviriler
+  i18n.py         Çeviri sistemi ve Türkçe; locales/ diğer diller (es.py…)
   ui/
     main_window.py  Menüler, kısayollar, proje işlemleri, dışa aktarma penceresi
     timeline.py     Zaman çizelgesi bileşeni
@@ -297,6 +340,7 @@ kurgu/
     mask_panel.py   Opaklık ve Maskeler bölümü
     mixer.py        Ses izi mikseri ve klip ses efektleri
     captions_panel.py Altyazılar paneli
+    voiceover.py    Seslendirme kaydı penceresi
     panels.py       Medya kutusu ve denetçi (efekt kontrolleri dahil)
     effects_panel.py Efektler paneli
 tests/            pytest testleri (sentetik videolarla)
@@ -326,20 +370,26 @@ Katkılarınızı bekleyen başlıca konular:
 - [x] Diske kalıcı render dosyaları, GPU ile çözme ve kodlama
 - [x] Hazır paketler: Windows kurulum + zip, macOS dmg/zip, Linux AppImage/tar.gz, Flatpak manifesti
 - [ ] GPU ile katman birleştirme (OpenGL/Vulkan)
-- [ ] Maske yolu ve renk tekerleklerinde anahtar kare
-- [ ] Ses kaydı (seslendirme), ses geçişleri kütüphanesi
-- [ ] Altyazı stil şablonları ve kelime kelime vurgulu altyazı (Reels tarzı)
-- [ ] İç içe sekanslar (nested sequence)
-- [ ] Yeni dil çevirileri (`kurgu/i18n.py`)
+- [x] Maske yolu ve renk tekerleklerinde anahtar kare
+- [x] Seslendirme kaydı
+- [x] Kelime kelime vurgulu altyazı (Reels tarzı)
+- [x] İç içe sekanslar (nested sequence)
+- [x] Uygulama içi dil seçimi, İspanyolca arayüz
+- [ ] Ses geçişleri kütüphanesi, altyazı stil şablonları
+- [ ] Otomatik nesne takibi (maske izleme)
+- [ ] Yeni dil çevirileri: Almanca, Fransızca, Arapça… ([nasıl?](CONTRIBUTING.md#translations))
 
 ## Katkı
 
+Her türlü katkıya açığız: hata düzeltme, yeni efekt, çeviri, belge. Ayrıntılar
+**[CONTRIBUTING.md](CONTRIBUTING.md)** dosyasında (Türkçe özet en altta).
+
 1. Depoyu çatallayın (fork), yeni bir dal açın.
-2. `pip install -e ".[dev]"` ve `pytest` ile testlerin geçtiğini görün.
+2. `pip install -e ".[dev]"` ve `pytest -q` ile testlerin geçtiğini görün.
 3. Değişikliğinizi yapın, mümkünse test ekleyin, pull request açın.
 
-Hata bildirirken işletim sisteminizi, Python sürümünüzü ve sorunu yaşatan dosya
-türünü yazmanız çözümü çok hızlandırır.
+Hata bildirmenin en kolay yolu uygulamada **Yardım → Sorun Bildir…**. README'deki ekran
+görüntüleri `python packaging/screenshots.py` ile yeniden üretilir.
 
 ## Lisans
 

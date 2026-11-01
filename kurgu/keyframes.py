@@ -6,8 +6,11 @@ animasyon içerikle birlikte doğru yerde kalır (Premiere ile aynı mantık).
 
 clip.keyframes = {
     "pos_x": [[kaynak_zamanı, değer, "linear" | "ease" | "hold"], ...],
-    "fx.<efekt_id>.<param>": [...],
+    "fx.<efekt_id>.<param>": [...],      # ör. renk tekerleği [x, y] (liste değer)
+    "mask.<maske_id>.<param>": [...],    # ör. "box", "points" (maske yolu), "feather"
 }
+Değer sayı ya da (iç içe) sayı listesi olabilir; listeler eleman eleman enterpole edilir.
+Biçimleri uyuşmayan iki anahtar arasında (ör. nokta sayısı değişmiş maske) değer tutulur.
 Bir anahtarın enterpolasyonu, o anahtardan bir sonrakine kadar olan bölümü belirler.
 """
 from __future__ import annotations
@@ -49,7 +52,18 @@ def is_animated(clip: Clip, prop: str) -> bool:
     return bool(clip.keyframes.get(prop))
 
 
+def _mask(clip: Clip, mid: str):
+    for m in clip.masks or []:
+        if m.get("id") == mid:
+            return m
+    return None
+
+
 def static_value(clip: Clip, prop: str):
+    if prop.startswith("mask."):
+        _m, mid, param = prop.split(".", 2)
+        m = _mask(clip, mid)
+        return copy.deepcopy(m.get(param)) if m else None
     if prop.startswith("fx."):
         _f, eid, param = prop.split(".", 2)
         for e in clip.effects:
@@ -60,6 +74,12 @@ def static_value(clip: Clip, prop: str):
 
 
 def set_static(clip: Clip, prop: str, value):
+    if prop.startswith("mask."):
+        _m, mid, param = prop.split(".", 2)
+        m = _mask(clip, mid)
+        if m is not None:
+            m[param] = copy.deepcopy(value)
+        return
     if prop.startswith("fx."):
         _f, eid, param = prop.split(".", 2)
         for e in clip.effects:
@@ -74,22 +94,44 @@ def _ease(u):
     return u * u * (3 - 2 * u)
 
 
-def eval_keys(ks: list, s: float, default=0.0) -> float:
+def _shape(v):
+    if isinstance(v, (list, tuple)):
+        return tuple(_shape(x) for x in v)
+    return None if isinstance(v, (int, float)) and not isinstance(v, bool) else "x"
+
+
+def lerp(v0, v1, u: float):
+    """İki değer arasında enterpolasyon; listeler eleman eleman (biçim uyuşmazsa v0)."""
+    if isinstance(v0, (list, tuple)):
+        if _shape(v0) != _shape(v1):
+            return copy.deepcopy(v0)
+        return [lerp(a, b, u) for a, b in zip(v0, v1)]
+    if isinstance(v0, bool) or not isinstance(v0, (int, float)) \
+            or not isinstance(v1, (int, float)):
+        return v0
+    return v0 + (v1 - v0) * u
+
+
+def _copy(v):
+    return copy.deepcopy(v) if isinstance(v, (list, tuple, dict)) else v
+
+
+def eval_keys(ks: list, s: float, default=0.0):
     if not ks:
         return default
     if s <= ks[0][0]:
-        return ks[0][1]
+        return _copy(ks[0][1])
     if s >= ks[-1][0]:
-        return ks[-1][1]
+        return _copy(ks[-1][1])
     for (t0, v0, it), (t1, v1, _i) in zip(ks, ks[1:]):
         if t0 <= s <= t1:
             if it == "hold" or t1 <= t0:
-                return v0
+                return _copy(v0)
             u = (s - t0) / (t1 - t0)
             if it == "ease":
                 u = _ease(u)
-            return v0 + (v1 - v0) * u
-    return ks[-1][1]
+            return lerp(v0, v1, u)
+    return _copy(ks[-1][1])
 
 
 def eval_keys_array(ks: list, s: np.ndarray, default=1.0) -> np.ndarray:
@@ -133,11 +175,15 @@ def animated(clip: Clip, t: float) -> Clip:
     c = copy.copy(clip)
     s = clip.source_time(t)
     fx_vals: dict = {}
+    mask_vals: dict = {}
     for prop, ks in clip.keyframes.items():
         if not ks:
             continue
         v = eval_keys(ks, s)
-        if prop.startswith("fx."):
+        if prop.startswith("mask."):
+            _m, mid, param = prop.split(".", 2)
+            mask_vals.setdefault(mid, {})[param] = v
+        elif prop.startswith("fx."):
             _f, eid, param = prop.split(".", 2)
             fx_vals.setdefault(eid, {})[param] = v
         else:
@@ -151,6 +197,9 @@ def animated(clip: Clip, t: float) -> Clip:
                 e["params"] = {**e["params"], **vals}
             new.append(e)
         c.effects = new
+    if mask_vals:
+        c.masks = [{**m, **mask_vals[m.get("id")]} if m.get("id") in mask_vals else m
+                   for m in clip.masks]
     return c
 
 
@@ -165,6 +214,7 @@ def key_index(ks: list, s: float, fps: float) -> int | None:
 def set_key(clip: Clip, prop: str, s: float, value: float, fps: float, interp=None):
     ks = clip.keyframes.setdefault(prop, [])
     i = key_index(ks, s, fps)
+    value = _copy(value)
     if i is not None:
         ks[i][1] = value
         if interp:
@@ -224,6 +274,13 @@ def remove_keys_at(clip: Clip, s: float, fps: float):
         remove_key(clip, prop, s, fps)
 
 
+def drop_mask_keys(clip: Clip, mask: dict):
+    mid = mask.get("id")
+    if mid:
+        for prop in [p for p in clip.keyframes if p.startswith(f"mask.{mid}.")]:
+            clip.keyframes.pop(prop, None)
+
+
 def drop_effect_keys(clip: Clip, effect: dict):
     eid = effect.get("id")
     if eid:
@@ -235,6 +292,6 @@ def retarget(keyframes: dict, src: Clip, dst: Clip) -> dict:
     """Anahtarları başka bir klibe taşı (Özellikleri Yapıştır): klip başına göre hizala."""
     out = {}
     for prop, ks in keyframes.items():
-        out[prop] = [[dst.in_point + (k[0] - src.in_point) / src.speed * dst.speed, k[1], k[2]]
+        out[prop] = [[dst.in_point + (k[0] - src.in_point) / src.speed * dst.speed, _copy(k[1]), k[2]]
                      for k in ks]
     return out

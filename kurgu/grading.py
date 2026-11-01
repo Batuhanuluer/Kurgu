@@ -210,9 +210,16 @@ def is_identity(p: dict) -> bool:
 
 
 def apply(arr: np.ndarray, p: dict, dither=None) -> np.ndarray:
-    """arr: (H, W, 3|4) uint8, yerinde değiştirilir."""
+    """arr: (H, W, 3|4) uint8, yerinde değiştirilir (büyük karede çekirdekler arasında)."""
     if is_identity(p):
         return arr
+    from .parallel import rows
+    tables_u8(p)  # tablo tek seferde, şeritlerden önce
+    rows(lambda a, d: _apply8(a, p, d), arr, dither)
+    return arr
+
+
+def _apply8(arr: np.ndarray, p: dict, dither=None) -> np.ndarray:
     lut8, lutf = tables_u8(p)
     sat = p.get("saturation", 100.0) / 100.0
     vib = p.get("vibrance", 0.0) / 100.0
@@ -251,36 +258,63 @@ def apply(arr: np.ndarray, p: dict, dither=None) -> np.ndarray:
 _CACHE16: dict = {}
 
 
+def tables16(p: dict):
+    """16 bit giriş için kanal başına 65536 girişli tablo (bir kez hesaplanır):
+    uint16 sonuç tablosu ve float (0..65535) tablo, ikisi de kanal kanal düzleştirilmiş."""
+    k = _key(p)
+    hit = _CACHE16.get(k)
+    if hit is None:
+        lut = tone_tables(p, 4097)  # 12 bit çözünürlük, aradaki değerler doğrusal
+        x = np.linspace(0, 4096, 65536, dtype=np.float32)
+        full = np.stack([np.interp(x, np.arange(4097, dtype=np.float32), lut[:, ch])
+                         for ch in range(3)])  # (3, 65536)
+        f = (full * 65535).astype(np.float32).ravel()
+        u = np.clip(f + 0.5, 0, 65535).astype(np.uint16)
+        hit = (u, f)
+        if len(_CACHE16) > 8:
+            _CACHE16.clear()
+        _CACHE16[k] = hit
+    return hit
+
+
 def apply16(arr: np.ndarray, p: dict) -> np.ndarray:
     """16 bit (uint16, 0..65535) RGB dizisinde aynı düzeltme: 10-bit dışa aktarma yolunda
-    bantlanmasız sonuç için. Tablo 4096 girişli (12 bit) ve doğrusal ara değerli."""
+    bantlanmasız sonuç için. Tek tablo okumasıyla (8-bit yol gibi) hızlıdır."""
     if is_identity(p):
         return arr
-    k = _key(p)
-    lutf = _CACHE16.get(k)
-    if lutf is None:
-        lutf = tone_tables(p, 4097)  # 0..4096: son giriş ara değer için
-        if len(_CACHE16) > 16:
-            _CACHE16.clear()
-        _CACHE16[k] = lutf
+    from .parallel import rows
+    tables16(p)
+    rows(lambda a: _apply16(a, p), arr)
+    return arr
+
+
+def _apply16(arr: np.ndarray, p: dict) -> np.ndarray:
+    u, f16 = tables16(p)
     rgb = arr[..., :3]
-    pos = rgb.astype(np.float32) * (4096 / 65535)
-    i0 = np.minimum(pos.astype(np.int32), 4095)
-    fr = pos - i0
-    f = np.empty(rgb.shape, np.float32)
-    for ch in range(3):
-        lo = lutf[:, ch][i0[..., ch]]
-        hi = lutf[:, ch][i0[..., ch] + 1]
-        f[..., ch] = lo + (hi - lo) * fr[..., ch]
+    idx = rgb.astype(np.uint32)
+    idx[..., 1] += 65536
+    idx[..., 2] += 131072
     sat = p.get("saturation", 100.0) / 100.0
     vib = p.get("vibrance", 0.0) / 100.0
-    if abs(sat - 1) > 1e-6 or abs(vib) > 1e-6:
+    if abs(sat - 1) < 1e-6 and abs(vib) < 1e-6:
+        arr[..., :3] = u[idx]
+        return arr
+    f = f16[idx]
+    w = np.array([0.2126, 0.7152, 0.0722], np.float32)
+    if abs(vib) < 1e-6:
+        m = (sat * np.eye(3) + (1 - sat) * np.outer(np.ones(3), w)).astype(np.float32)
+        f = (f.reshape(-1, 3) @ m.T).reshape(f.shape)
+    else:
         r, g, b = f[..., 0], f[..., 1], f[..., 2]
-        y = r * 0.2126 + g * 0.7152 + b * 0.0722
-        kk = np.full(y.shape, sat, np.float32)
-        if vib:
-            cur = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
-            kk = sat * (1 + vib * (1 - np.minimum(cur * 1.5, 1.0)))
-        f = y[..., None] + (f - y[..., None]) * kk[..., None]
-    arr[..., :3] = np.clip(f * 65535 + 0.5, 0, 65535).astype(np.uint16)
+        y = r * w[0] + g * w[1] + b * w[2]
+        cur = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+        k = 1 - np.minimum(cur * (1.5 / 65535.0), 1.0)
+        k *= sat * vib
+        k += sat
+        f -= y[..., None]
+        f *= k[..., None]
+        f += y[..., None]
+    f += 0.5
+    np.clip(f, 0, 65535, out=f)
+    arr[..., :3] = f.astype(np.uint16)
     return arr

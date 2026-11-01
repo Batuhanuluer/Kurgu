@@ -291,7 +291,7 @@ class SliderRow(QWidget):
 class AnimRow(QWidget):
     """Animasyonlanabilen bir değer: kaydırıcı + ⏱ kronometre + ‹ ◆ › anahtar düğmeleri."""
 
-    def __init__(self, inspector, prop_fn, slider: "SliderRow"):
+    def __init__(self, inspector, prop_fn, slider: "SliderRow | None", label: str = ""):
         super().__init__()
         self.ins = inspector
         self.prop_fn = prop_fn  # () -> özellik adı (efekt kimliği sonradan oluşabilir)
@@ -303,7 +303,12 @@ class AnimRow(QWidget):
         self.watch = self._btn("⏱", _("Toggle animation (stopwatch)"), checkable=True)
         self.watch.clicked.connect(lambda: self.ins.main.toggle_anim(self.ins.clip, self.prop))
         lay.addWidget(self.watch)
-        lay.addWidget(slider, 1)
+        if slider is not None:
+            lay.addWidget(slider, 1)
+        else:  # kaydırıcısız değer (maske yolu, renk tekerleği): yalnızca anahtar düğmeleri
+            lab = QLabel(label)
+            lab.setStyleSheet("color:#9aa0a6;")
+            lay.addWidget(lab, 1)
         self.prev = self._btn("‹", _("Previous keyframe"))
         self.prev.clicked.connect(lambda: self.ins.main.jump_key(self.ins.clip, self.prop, -1))
         self.key = self._btn("◇", _("Add / remove keyframe"))
@@ -328,7 +333,8 @@ class AnimRow(QWidget):
         return b
 
     def set_value(self, v):
-        self.slider.set_value(v)
+        if self.slider is not None:
+            self.slider.set_value(v)
 
     def sync(self, clip, t: float, fps: float):
         prop = self.prop
@@ -341,6 +347,8 @@ class AnimRow(QWidget):
             here = kf.key_index(kf.keys(clip, prop), clip.source_time(t), fps) is not None
             self.key.setText("◆" if here else "◇")
             self.key.setStyleSheet("color:#f0b429;" if here else "")
+        if self.slider is None:
+            return
         v = kf.value_at(clip, prop, t)
         if v is not None:
             self.slider.set_value(v)
@@ -691,7 +699,7 @@ class Inspector(QScrollArea):
             self.title.setText(_("No clip selected"))
             return
         is_audio = not self.main.project.track_is_video(clip.track)
-        self.fx_group.setVisible(not is_audio and clip.kind == "media")
+        self.fx_group.setVisible(not is_audio and clip.kind in ("media", "nest"))
         self.title.setText(f"{clip.name}\n{_('Duration')}: "
                            f"{timecode(clip.duration, self.main.project.fps)}")
         group_has = {g: False for g in self.groups}
@@ -700,7 +708,7 @@ class Inspector(QScrollArea):
             show = (only == "all" or (only == "audio" and is_audio)
                     or (only.startswith("visual") and not is_audio
                         and not (only == "visualmedia" and clip.kind == "text"))
-                    or (only == "media" and clip.kind == "media"))
+                    or (only == "media" and clip.kind in ("media", "nest")))
             self.rows[field].setVisible(show)
             self.row_labels[field].setVisible(show)
             self.rows[field].set_value(getattr(clip, field))
@@ -801,6 +809,8 @@ class Inspector(QScrollArea):
         for box in self.fx_boxes:
             for row in box.anim_rows:
                 row.sync(clip, t, fps)
+        if self.mask_panel.isVisibleTo(self):
+            self.mask_panel.sync_time(t)
 
     def _apply(self, field, value):
         if self.clip is None:

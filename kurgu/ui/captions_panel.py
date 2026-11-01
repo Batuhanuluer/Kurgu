@@ -5,7 +5,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QColorDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from .. import captions as cap
 from ..i18n import _
@@ -61,17 +62,52 @@ class CaptionsPanel(QWidget):
         self.outline = QCheckBox(_("Outline"))
         self.outline.toggled.connect(lambda on: self._style("outline", bool(on)))
         self.color = QPushButton()
-        self.color.clicked.connect(self._pick_color)
+        self.color.clicked.connect(lambda: self._pick_color("color"))
         sf.addRow(_("Size"), self.size)
         sf.addRow(_("Position"), self.pos)
         sf.addRow(_("Color"), self.color)
         sf.addRow(self.box)
         sf.addRow(_("Box opacity"), self.box_op)
+        self.upper = QCheckBox(_("UPPERCASE"))
+        self.upper.toggled.connect(lambda on: self._style("uppercase", bool(on)))
         checks = QHBoxLayout()
         checks.addWidget(self.bold)
         checks.addWidget(self.outline)
+        checks.addWidget(self.upper)
         sf.addRow(checks)
         lay.addWidget(style)
+
+        # Kelime vurgusu (Reels / TikTok tarzı)
+        hl = QGroupBox(_("Word Highlight"))
+        hf = QFormLayout(hl)
+        reels = QPushButton("✨ " + _("Reels Style"))
+        reels.setToolTip(_("Big centered captions in short phrases; the spoken word is "
+                           "highlighted"))
+        reels.clicked.connect(lambda: self.apply_reels())
+        hf.addRow(reels)
+        self.hl = QCheckBox(_("Highlight the spoken word"))
+        self.hl.toggled.connect(lambda on: self._style("highlight", bool(on)))
+        hf.addRow(self.hl)
+        self.hl_color = QPushButton()
+        self.hl_color.clicked.connect(lambda: self._pick_color("highlight_color"))
+        self.hl_box = QCheckBox(_("Box behind the word"))
+        self.hl_box.toggled.connect(lambda on: self._style("highlight_box", bool(on)))
+        hrow = QHBoxLayout()
+        hrow.addWidget(self.hl_color, 1)
+        hrow.addWidget(self.hl_box)
+        hf.addRow(_("Color"), hrow)
+        srow = QHBoxLayout()
+        self.words = QSpinBox()
+        self.words.setRange(1, 8)
+        self.words.setValue(3)
+        self.words.setSuffix(" " + _("words"))
+        split = QPushButton(_("Split"))
+        split.setToolTip(_("Re-split all captions into short phrases using the word timing"))
+        split.clicked.connect(lambda: self.split_phrases(self.words.value()))
+        srow.addWidget(self.words, 1)
+        srow.addWidget(split)
+        hf.addRow(_("Short phrases"), srow)
+        lay.addWidget(hl)
         self.info = QLabel()
         self.info.setStyleSheet("color:#80868b;")
         self.info.setWordWrap(True)
@@ -106,7 +142,11 @@ class CaptionsPanel(QWidget):
         self.box_op.set_value(st["box_opacity"] * 100)
         self.bold.setChecked(bool(st["bold"]))
         self.outline.setChecked(bool(st["outline"]))
+        self.upper.setChecked(bool(st["uppercase"]))
+        self.hl.setChecked(bool(st["highlight"]))
+        self.hl_box.setChecked(bool(st["highlight_box"]))
         self.color.setStyleSheet(f"background:{st['color']}; min-height:20px;")
+        self.hl_color.setStyleSheet(f"background:{st['highlight_color']}; min-height:20px;")
         self.info.setText(_("{n} captions").format(n=len(cs)) if cs else
                           _("No captions yet. Transcribe speech, import an SRT file or add "
                             "one at the playhead."))
@@ -152,11 +192,37 @@ class CaptionsPanel(QWidget):
         p.tracks[ti].style[key] = value
         self.main.on_edited(refresh_inspector=False)
 
-    def _pick_color(self):
+    def _pick_color(self, key="color"):
         p = self.main.project
         ti = p.caption_track(create=False)
         st = cap.style_of(p.tracks[ti] if ti is not None else None)
-        col = QColorDialog.getColor(QColor(st["color"]), self, _("Color"))
+        col = QColorDialog.getColor(QColor(st[key]), self, _("Color"))
         if col.isValid():
-            self._style("color", col.name())
+            self._style(key, col.name())
             self.refresh()
+
+    # ------------------------------------------------------------ Reels tarzı
+    def split_phrases(self, max_words: int):
+        p = self.main.project
+        ti = p.caption_track(create=False)
+        if ti is None or not self.clips():
+            self.main.statusBar().showMessage(_("No captions yet"), 4000)
+            return []
+        self.main.before_edit()
+        made = cap.rechunk(p, ti, max_words)
+        self.main.on_edited()
+        self.refresh()
+        return made
+
+    def apply_reels(self):
+        p = self.main.project
+        ti = p.caption_track(create=False)
+        if ti is None:
+            self.main.statusBar().showMessage(_("No captions yet"), 4000)
+            return
+        self.main.before_edit()
+        p.tracks[ti].style.update(cap.REELS_STYLE)
+        if self.clips():
+            cap.rechunk(p, ti, self.words.value())
+        self.main.on_edited()
+        self.refresh()

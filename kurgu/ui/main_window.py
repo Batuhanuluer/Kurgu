@@ -282,7 +282,9 @@ class MainWindow(QMainWindow):
         self.timeline_panel = TimelinePanel(self)
         self.timeline = self.timeline_panel.timeline
         self.monitor = ProgramMonitor(self)
-        self.source_marks: dict[str, tuple] = {}  # medya kimliği -> (giriş, çıkış)
+        self.source_marks: dict[str, tuple] = {}
+        self.nest_stack = []  # [(üst proje, geçmişi, oynatma kafası, iç içe kimliği, ad)]
+        self._nest_before = []
         from .source import SourceMonitor
         self.source = SourceMonitor(self)
         self.monitors = QSplitter(Qt.Horizontal)
@@ -310,8 +312,6 @@ class MainWindow(QMainWindow):
         from .scopes import ScopesPanel
         self.color_panel = ColorPanel(self)
         self.color_dock = self._dock(_("Lumetri Color"), self.color_panel, Qt.RightDockWidgetArea)
-        self.tabifyDockWidget(self.inspector_dock, self.color_dock)
-        self.inspector_dock.raise_()
         self._inspector_stale = False
         self.inspector_dock.visibilityChanged.connect(self._inspector_shown)
         self.color_dock.visibilityChanged.connect(
@@ -320,6 +320,9 @@ class MainWindow(QMainWindow):
         self.captions_panel = CaptionsPanel(self)
         self.captions_dock = self._dock(_("Captions"), self.captions_panel,
                                         Qt.RightDockWidgetArea)
+        # Üçü tek seferde sekmelenir: arada yerleşim olursa Qt eski bir sekme çubuğunu
+        # ekranda bırakıyordu (monitör kenarında yarım "Col…" yazısı)
+        self.tabifyDockWidget(self.inspector_dock, self.color_dock)
         self.tabifyDockWidget(self.color_dock, self.captions_dock)
         self.captions_dock.visibilityChanged.connect(
             lambda vis: vis and self.captions_panel.refresh())
@@ -390,6 +393,23 @@ class MainWindow(QMainWindow):
                     w = self.monitors.width()
                     self.monitors.setSizes([w // 2, w - w // 2])
             QTimer.singleShot(0, even)
+            QTimer.singleShot(0, self.hide_stale_tabbars)
+
+    def hide_stale_tabbars(self):
+        """Qt bazen sekmelenmiş paneller için eski bir sekme çubuğunu ekranda bırakır
+        (monitörün kenarında yarım görünen "Col…" yazısı). Panel gruplarıyla uyuşmayan
+        sekme çubuklarını gizler."""
+        from PySide6.QtWidgets import QDockWidget, QTabBar
+        docks = {d.windowTitle(): d for d in self.findChildren(QDockWidget)}
+        for tb in self.findChildren(QTabBar):
+            if tb.parentWidget() is not self or not tb.isVisible() or tb.count() == 0:
+                continue
+            d = docks.get(tb.tabText(0))
+            if d is None:
+                continue
+            group = 1 + len([x for x in self.tabifiedDockWidgets(d) if not x.isHidden()])
+            if tb.count() != group:
+                tb.hide()
 
     # ------------------------------------------------------------ kurulum
     def _dock(self, title, widget, area):
@@ -465,7 +485,11 @@ class MainWindow(QMainWindow):
         self._act(s, _("Add Marker"), self.add_marker, "M")
         self._act(s, _("Apply Default Transition"), self.apply_default_transition, "Ctrl+D")
         s.addSeparator()
+        self._act(s, _("Nest…"), self.nest_selected)
+        self._act(s, _("Back to Parent Sequence"), self.exit_nest, "Ctrl+Backspace")
+        s.addSeparator()
         self._act(s, _("Normalize Loudness…"), self.normalize_dialog)
+        self._act(s, _("Record Voiceover…"), self.voiceover_dialog, "Shift+R")
         s.addSeparator()
         self._act(s, _("Render Effects") + "\tEnter", self.render_effects)
         self._act(s, _("Delete Render Files"), self.clear_render_cache)
@@ -511,6 +535,7 @@ class MainWindow(QMainWindow):
 
         h = mb.addMenu(_("Help"))
         self._act(h, _("Keyboard Shortcuts"), self.show_shortcuts, "F1")
+        self._act(h, _("Report a Problem…"), self.report_problem)
         h.addSeparator()
         self._act(h, _("Check for Updates…"), lambda: self.check_updates(manual=True))
         auto = self._act(h, _("Check for updates at startup"),
@@ -550,11 +575,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ durum
     def _update_title(self):
         app_name = f"Kurgu {__version__}"
-        if not self.project.path:
+        stack = getattr(self, "nest_stack", None)
+        root = stack[0][0] if stack else self.project
+        if not root.path:
             self.setWindowTitle(("• " if self.dirty else "") + app_name)
             return
-        name = os.path.basename(self.project.path)
-        if getattr(self.project, "recovered", False):
+        name = os.path.basename(root.path)
+        if getattr(root, "recovered", False):
             name += " [" + _("recovered") + "]"
         self.setWindowTitle(f"{'• ' if self.dirty else ''}{name} — Kurgu {__version__}")
 
@@ -840,6 +867,39 @@ class MainWindow(QMainWindow):
         self.timeline.selected = {c.id for c in made}
         self.on_edited()
 
+    # ------------------------------------------------------------ seslendirme
+    def voiceover_folder(self) -> str:
+        """Kayıtlar proje dosyasının yanındaki "Voiceover" klasörüne (kaydedilmemişse
+        ~/Kurgu/Voiceover) yazılır."""
+        root = self.nest_stack[0][0] if self.nest_stack else self.project
+        if root.path:
+            return os.path.join(os.path.dirname(os.path.abspath(root.path)), "Voiceover")
+        return os.path.join(os.path.expanduser("~"), "Kurgu", "Voiceover")
+
+    def voiceover_dialog(self, fake: bool = False):
+        from .voiceover import VoiceoverDialog
+        dlg = getattr(self, "_voiceover", None)
+        if dlg is None:
+            dlg = self._voiceover = VoiceoverDialog(self, fake=fake)
+        dlg.refresh()
+        dlg.show()
+        dlg.raise_()
+        return dlg
+
+    def add_voiceover(self, path: str, t: float, track: int | None):
+        items = self.import_paths([path])
+        if not items:
+            return []
+        p = self.project
+        self.before_edit()
+        if track is None or track < 0 or track >= len(p.tracks):
+            p.add_track("audio")
+            track = len(p.tracks) - 1
+        made = p.place_media(items[0], t, None, track, video=False)
+        self.timeline.selected = {c.id for c in made}
+        self.on_edited()
+        return made
+
     # ------------------------------------------------------------ çoklu kamera
     def create_multicam_dialog(self, items):
         """Premiere "Çoklu Kamera Kaynak Sekansı Oluştur": kameraları sesten eşitle."""
@@ -983,6 +1043,93 @@ class MainWindow(QMainWindow):
         if hasattr(self, "mc_view_action"):
             self.mc_view_action.setChecked(on)
 
+    # ------------------------------------------------------------ iç içe sekanslar
+    nest_stack: list = []
+
+    def root_project(self) -> Project:
+        """Kaydedilecek ana proje (iç içe sekans açıksa içerideki düzenlemeler yazılır)."""
+        if not self.nest_stack:
+            return self.project
+        child = self.project
+        for parent, _h, _ph, nid, _name in reversed(self.nest_stack):
+            parent.store_nest(nid, child)
+            child = parent
+        return child
+
+    def nest_selected(self, name: str | None = None):
+        sel = self.selected_clips()
+        if not sel:
+            self.statusBar().showMessage(_("Select clips to nest"), 3000)
+            return None
+        n = len(self.project.nests) + 1
+        if name is None:
+            text, ok = QInputDialog.getText(self, _("Nest…").rstrip("…"), _("Name"),
+                                            text=_("Nested Sequence") + f" {n}")
+            if not ok:
+                return None
+            name = text.strip() or _("Nested Sequence") + f" {n}"
+        self.player.pause()
+        self.before_edit()
+        made = self.project.nest_clips([c.id for c in sel], name)
+        self.timeline.selected = {c.id for c in made}
+        self.on_edited()
+        return made
+
+    def enter_nest(self, clip):
+        if clip is None or clip.kind != "nest" or clip.nest not in self.project.nests:
+            return
+        self.player.pause()
+        name = self.project.nests[clip.nest].get("name", "Nest")
+        import copy
+        # Girişteki iç sekans durumu: kaydetme sırasında ana projeye yazılsa bile çıkışta
+        # geri alma adımı bu durumdan kurulur.
+        self._nest_before = getattr(self, "_nest_before", [])
+        self._nest_before.append(copy.deepcopy(self.project.nests[clip.nest]))
+        self.nest_stack.append((self.project, self.history, self.timeline.playhead, clip.nest,
+                                name))
+        child = self.project.nest_project(clip.nest)
+        self.project = child
+        self.history = History()
+        self.monitor.comp = None
+        self.timeline.selected = set()
+        self.timeline.set_playhead(min(max(clip.source_time(self.timeline.playhead), 0.0),
+                                       child.duration), emit=False)
+        self._update_crumbs()
+        self.on_edited()
+        self.timeline.zoom_fit()
+
+    def exit_nest(self):
+        if not self.nest_stack:
+            return
+        self.player.pause()
+        child = self.project
+        parent, hist, playhead, nid, _name = self.nest_stack.pop()
+        before = self._nest_before.pop() if getattr(self, "_nest_before", None) else None
+        if self.history.undo_stack:  # içeride değişiklik oldu: dışarıda tek geri alma adımı
+            if before is not None:
+                parent.nests[nid] = before
+            hist.push(parent)
+            parent.store_nest(nid, child)
+        self.project = parent
+        self.history = hist
+        self.monitor.comp = None
+        self.timeline.selected = {c.id for c in parent.clips
+                                  if c.kind == "nest" and c.nest == nid}
+        self.timeline.set_playhead(playhead, emit=False)
+        self._update_crumbs()
+        self.on_edited()
+
+    def unnest(self, clip):
+        self.before_edit()
+        made = self.project.unnest(clip)
+        self.timeline.selected = {c.id for c in made}
+        self.on_edited()
+
+    def _update_crumbs(self):
+        names = [_("Main Sequence")] + [n for *_r, n in self.nest_stack]
+        self.timeline_panel.set_crumbs(names)
+        self._update_title()
+
     # ------------------------------------------------------------ ses
     def normalize_dialog(self, target=None, auto_accept=False):
         """Seçili (yoksa tüm) ses kliplerinin ses yüksekliğini hedefe eşitle."""
@@ -1016,32 +1163,60 @@ class MainWindow(QMainWindow):
                 return None
             target = combo.currentData()
         peak_mode = target > -5
-        comp = Compositor(p, SourcePool(p.sample_rate))
+        snap = Project.from_dict(p.to_dict())  # ölçüm arka planda, kopya üzerinde
+        work = [(c.id, snap.clip_by_id(c.id)) for c in clips]
+        box = {"done": 0, "res": {}, "err": None}
+
+        def measure():
+            comp = Compositor(snap, SourcePool(snap.sample_rate))
+            try:
+                for cid, c in work:
+                    if c is None or kf.is_animated(c, "volume"):
+                        box["res"][cid] = None
+                        continue
+                    m = snap.media.get(c.media_id)
+                    src = comp.pool.audio_source(m) if m else None
+                    if src is not None:
+                        n = int(c.duration * snap.sample_rate)
+                        data = comp._clip_samples(c, src, c.start, n)
+                        if c.audio_fx:
+                            data = au.process(data, c.audio_fx, snap.sample_rate)
+                        g = au.normalize_gain(data, snap.sample_rate, target, peak_mode)
+                        vol = min(max(g, 0.0), 4.0)
+                        lu = au.integrated_loudness(data * vol, snap.sample_rate)
+                        box["res"][cid] = (vol, lu)
+                    box["done"] += 1
+            except Exception as e:  # noqa: BLE001
+                box["err"] = str(e)
+            finally:
+                comp.pool.close()
+        import threading
+        th = threading.Thread(target=measure, daemon=True)
+        th.start()
+        dlg = QProgressDialog(_("Measuring loudness…"), None, 0, len(work), self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(400)
+        while th.is_alive():
+            th.join(0.05)
+            dlg.setValue(box["done"])
+            QApplication.processEvents()
+        dlg.close()
+        if box["err"]:
+            self._plain_box(QMessageBox.Warning, _("Normalize Loudness…"), box["err"])
+            return None
         report = []
         self.before_edit()
-        try:
-            for c in clips:
-                if kf.is_animated(c, "volume"):
-                    report.append(f"{c.name}: " + _("skipped (volume is keyframed)"))
-                    continue
-                m = p.media.get(c.media_id)
-                src = comp.pool.audio_source(m) if m else None
-                if src is None:
-                    continue
-                n = int(c.duration * p.sample_rate)
-                data = comp._clip_samples(c, src, c.start, n)
-                if c.audio_fx:
-                    data = au.process(data, c.audio_fx, p.sample_rate)
-                g = au.normalize_gain(data, p.sample_rate, target, peak_mode)
-                vol = min(max(g, 0.0), 4.0)
-                for x in p.linked(c):
-                    if not p.track_is_video(x.track):
-                        x.volume = round(vol, 4)
-                lu = au.integrated_loudness(data * vol, p.sample_rate)
-                report.append(f"{c.name}: {au.lin2db(vol):+.1f} dB → "
-                              + (f"{lu:.1f} LUFS" if lu > -100 else "—"))
-        finally:
-            comp.pool.close()
+        for c in clips:
+            r = box["res"].get(c.id)
+            if r is None:
+                report.append(f"{c.name}: " + _("skipped (volume is keyframed)"))
+                continue
+            vol, lu = r
+            for x in p.linked(c):
+                if not p.track_is_video(x.track):
+                    x.volume = round(vol, 4)
+            report.append(f"{c.name}: {au.lin2db(vol):+.1f} dB → "
+                          + (f"{lu:.1f} LUFS" if lu > -100 else "—"))
         self.on_edited()
         self.statusBar().showMessage(_("Loudness normalized") + f": {len(report)}", 5000)
         return report
@@ -1311,11 +1486,11 @@ class MainWindow(QMainWindow):
     def scale_clip(self, clip, mode: str):
         """'fill': boşluk kalmadan kareyi doldur (kenarlar kırpılır), 'fit': tamamı görünsün."""
         p = self.project
-        m = p.media.get(clip.media_id)
-        if m is None or not m.width:
+        mw, mh = p.visual_size(clip)
+        if not mw or not mh:
             return
-        fit = min(p.width / m.width, p.height / m.height)
-        fill = max(p.width / m.width, p.height / m.height)
+        fit = min(p.width / mw, p.height / mh)
+        fill = max(p.width / mw, p.height / mh)
         value = round(fill / fit, 4) if mode == "fill" else 1.0
         self.before_edit()
         self.prop_edit(clip, "scale", value, push=False)
@@ -1512,6 +1687,11 @@ class MainWindow(QMainWindow):
                 kf.toggle_animation(clip, pr, clip.source_time(t), self.project.fps)
         self.on_edited(refresh_inspector=False)
         self.inspector.sync_time(self.timeline.playhead)
+        self._sync_color_keys(clip)
+
+    def _sync_color_keys(self, clip):
+        if self.color_panel.clip is clip:
+            self.color_panel.refresh()
 
     def toggle_key_here(self, clip, prop):
         if clip is None or not self._playhead_in(clip):
@@ -1527,6 +1707,7 @@ class MainWindow(QMainWindow):
                            self.project.fps)
         self.on_edited(refresh_inspector=False)
         self.inspector.sync_time(self.timeline.playhead)
+        self._sync_color_keys(clip)
 
     def jump_key(self, clip, prop, direction):
         if clip is None:
@@ -1728,7 +1909,7 @@ class MainWindow(QMainWindow):
             self.autosave_timer.start(minutes * 60 * 1000)
 
     def do_autosave(self, tag="auto") -> str | None:
-        p = self.project
+        p = self.root_project()
         if not self.dirty or not (p.clips or p.media):
             return None
         try:
@@ -2156,6 +2337,9 @@ class MainWindow(QMainWindow):
         if not self.maybe_save():
             return
         self.player.pause()
+        self.nest_stack = []
+        self._nest_before = []
+        self._update_crumbs()
         self.project = Project()
         self.history = History()
         self.session.update(uid=self.project.uid, project_path=None, last_autosave=None)
@@ -2193,6 +2377,9 @@ class MainWindow(QMainWindow):
             self._plain_box(QMessageBox.Critical, "Kurgu", str(e))
             return
         self.player.pause()
+        self.nest_stack = []
+        self._nest_before = []
+        self._update_crumbs()
         self.project = p
         self.history = History()
         self.thumbnails.clear()
@@ -2252,25 +2439,27 @@ class MainWindow(QMainWindow):
         return "allow" if box.clickedButton() is allow else "strip"
 
     def save(self) -> bool:
-        if not self.project.path or getattr(self.project, "recovered", False):
+        root = self.root_project()  # iç içe sekans açıksa da ana proje kaydedilir
+        if not root.path or getattr(root, "recovered", False):
             # Kurtarılan proje: hedefi her zaman kullanıcı onaylasın (Farklı Kaydet)
             return self.save_as()
         try:
-            self.project.save(self.project.path)
+            root.save(root.path)
         except Exception as e:
             QMessageBox.critical(self, "Kurgu", str(e))
             return False
         self.dirty = False
-        self.project.recovered = False
-        self.session.update(uid=self.project.uid, project_path=self.project.path)
+        root.recovered = False
+        self.session.update(uid=root.uid, project_path=root.path)
         self._update_title()
-        self.statusBar().showMessage(f"{_('Saved to')} {self.project.path}", 4000)
+        self.statusBar().showMessage(f"{_('Saved to')} {root.path}", 4000)
         return True
 
     def save_as(self) -> bool:
         from ..safety import valid_project_target
         last = self.settings.value("last_dir", os.path.expanduser("~"))
-        default = self.project.path if valid_project_target(self.project.path) else \
+        root = self.root_project()
+        default = root.path if valid_project_target(root.path) else \
             os.path.join(last, "project.kurgu")
         path, _f = QFileDialog.getSaveFileName(self, _("Save As…"), default,
                                                f"{_('Kurgu project')} (*.kurgu)")
@@ -2278,8 +2467,8 @@ class MainWindow(QMainWindow):
             return False
         if not path.lower().endswith(".kurgu"):
             path += ".kurgu"
-        self.project.path = path
-        self.project.recovered = False
+        root.path = path
+        root.recovered = False
         return self.save()
 
     def export_dialog(self):
@@ -2334,6 +2523,13 @@ class MainWindow(QMainWindow):
         mem.setSuffix(" MB")
         mem.setValue(int(self.settings.value("cache_mb", 1024)))
         form.addRow(_("Preview memory cache"), mem)
+        from .. import i18n
+        lang = QComboBox()
+        lang.addItem(_("System default"), "")
+        for code, name in i18n.LANGUAGES:
+            lang.addItem(name, code)
+        lang.setCurrentIndex(max(0, lang.findData(i18n.saved_language())))
+        form.insertRow(0, _("Interface language"), lang)
         disk = QDoubleSpinBox()
         disk.setRange(0, 2000)
         disk.setSuffix(" GB")
@@ -2362,6 +2558,12 @@ class MainWindow(QMainWindow):
         self.settings.setValue("cache_mb", mem.value())
         self.settings.setValue("render_disk_gb", disk.value())
         self.settings.setValue("hw_decode", dec.currentData())
+        if lang.currentData() != i18n.saved_language():
+            self.settings.setValue("language", lang.currentData())
+            self.settings.sync()
+            self.statusBar().showMessage(_("Restart Kurgu to apply the new language."), 10000)
+            QMessageBox.information(self, _("Interface language"),
+                                    _("Restart Kurgu to apply the new language."))
         self.cache.budget = mem.value() * 1024 * 1024
         self.cache.disk_budget = int(disk.value() * 1024 * 1024 * 1024)
         hw.MODE = dec.currentData()
@@ -2390,6 +2592,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(_("Saved to") + " " + path, 5000)
 
     # ------------------------------------------------------------ yardım
+    def report_problem(self, error: str = ""):
+        from .report_dialog import ReportDialog
+        ReportDialog(self, error).exec()
+
     def show_shortcuts(self):
         rows = [
             ("Space", _("Play / Pause")), ("J / K / L", "◀◀ / ■ / ▶▶"),
@@ -2446,6 +2652,19 @@ class MainWindow(QMainWindow):
         if not self.maybe_save():
             ev.ignore()
             return
+        ew = getattr(self, "_export_worker", None)
+        try:
+            running = ew is not None and ew.isRunning()
+        except RuntimeError:  # nesne silinmiş
+            running = False
+        if running:  # dışa aktarma sürerken kapatma: sor, iptal et ve bitmesini bekle
+            r = QMessageBox.question(self, _("Export Video"),
+                                     _("An export is still running. Cancel it and quit?"))
+            if r != QMessageBox.Yes:
+                ev.ignore()
+                return
+            ew.cancel = True
+            ew.wait(15000)
         self.player.pause()
         self.worker.shutdown()
         self.proxies.shutdown()

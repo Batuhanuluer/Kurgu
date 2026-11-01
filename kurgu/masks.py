@@ -70,14 +70,13 @@ def mask_path(m: dict, w: float, h: float) -> QPainterPath:
     return path
 
 
-def _one(m: dict, w: int, h: int, px: float) -> np.ndarray:
-    """Tek maskenin 0..1 kaplama dizisi (yumuşatma ve genişletme dahil)."""
+def _raster(m: dict, w: int, h: int, exp: float) -> np.ndarray:
+    """Maskeyi (genişletme dahil) w×h boyutunda 0..1 kaplamaya çizer."""
     img = QImage(w, h, QImage.Format_Grayscale8)
     img.fill(0)
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing, True)
     path = mask_path(m, w, h)
-    exp = float(m.get("expansion", 0.0)) * px
     p.setPen(Qt.NoPen)
     p.setBrush(QColor(255, 255, 255))
     p.drawPath(path)
@@ -94,20 +93,50 @@ def _one(m: dict, w: int, h: int, px: float) -> np.ndarray:
     p.end()
     bpl = img.bytesPerLine()
     a = np.frombuffer(img.constBits(), np.uint8, count=bpl * h).reshape(h, bpl)[:, :w]
-    a = a.astype(np.float32) / 255.0
+    return a.astype(np.float32) / 255.0
+
+
+def _one(m: dict, w: int, h: int, px: float) -> np.ndarray:
+    """Tek maskenin 0..1 kaplama dizisi (yumuşatma ve genişletme dahil).
+    Yumuşatma bulanık olduğundan büyük yumuşatmada maske küçük çizilip bulanıklaştırılır ve
+    sonra büyütülür: sonuç aynı görünür, 4K'da onlarca kat hızlıdır."""
     f = float(m.get("feather", 0.0)) * px
+    exp = float(m.get("expansion", 0.0)) * px
+    k = int(min(4, max(1, f / 8)))  # küçültme katsayısı
+    if k > 1:
+        sw, sh = max(2, -(-w // k)), max(2, -(-h // k))
+        a = _raster(m, sw, sh, exp / k)
+        from .effects import blur_array
+        a = blur_array(a, f / 2 / k)
+        q = QImage(np.ascontiguousarray((np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8)).data,
+                   sw, sh, sw, QImage.Format_Grayscale8)
+        q = q.scaled(sw * k, sh * k, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        bpl = q.bytesPerLine()
+        big = np.frombuffer(q.constBits(), np.uint8, count=bpl * q.height()).reshape(
+            q.height(), bpl)[:h, :w]
+        return big.astype(np.float32) / 255.0
+    a = _raster(m, w, h, exp)
     if f >= 1:
         from .effects import blur_array
         a = blur_array(a, f / 2)  # yumuşak kenar: kenarın iki yanına yayılır
     return np.clip(a, 0, 1)
 
 
+_CACHE: dict = {}
+
+
 def mask_alpha(masks: list, w: int, h: int, px: float = 1.0) -> np.ndarray | None:
     """Klip karesi için birleşik maske (h, w) 0..1; maske yoksa None.
-    px: dizi pikseli / proje pikseli."""
+    px: dizi pikseli / proje pikseli. Maskeler değişmedikçe sonuç önbellekten gelir
+    (oynatırken her karede yeniden hesaplanmaz)."""
     active = [m for m in masks or [] if m.get("enabled", True)]
     if not active:
         return None
+    import json
+    key = (json.dumps(active, sort_keys=True, default=str), w, h, round(px, 4))
+    hit = _CACHE.get(key)
+    if hit is not None:
+        return hit
     out = None
     for m in active:
         a = _one(m, w, h, px) * float(m.get("opacity", 1.0))
@@ -122,6 +151,10 @@ def mask_alpha(masks: list, w: int, h: int, px: float = 1.0) -> np.ndarray | Non
             out = np.minimum(out, a)
         else:
             out = np.maximum(out, a)
+    out.setflags(write=False)  # önbellekteki dizi yanlışlıkla değişmesin
+    if len(_CACHE) > 24:
+        _CACHE.clear()
+    _CACHE[key] = out
     return out
 
 

@@ -118,6 +118,11 @@ class Strip(QWidget):
         if not master:
             btns.addWidget(self.mute)
             btns.addWidget(self.solo)
+            mic = QToolButton()
+            mic.setText("🎙")
+            mic.setToolTip(_("Record voiceover on this track"))
+            mic.clicked.connect(lambda: self._record())
+            btns.addWidget(mic)
         lay.addLayout(btns)
         self._loading = False
 
@@ -159,6 +164,12 @@ class Strip(QWidget):
         self.panel.push(("pan", self.ti))
         self.track().pan = v / 100
         self.panel.changed()
+
+    def _record(self):
+        dlg = self.panel.main.voiceover_dialog()
+        i = dlg.track.findData(self.ti)
+        if i >= 0:
+            dlg.track.setCurrentIndex(i)
 
     def _mute(self, on):
         if self._loading:

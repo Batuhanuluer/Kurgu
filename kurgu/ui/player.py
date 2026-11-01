@@ -267,6 +267,7 @@ class Player(QObject):
         self._audio_pool = None
         self._t0 = 0.0
         self._clock0 = 0.0
+        self.silent = False  # seslendirme kaydında zaman çizelgesi sesi kapalı oynar
 
     def toggle(self):
         self.pause() if self.playing else self.play()
@@ -281,7 +282,7 @@ class Player(QObject):
         self.rate = rate
         self._t0 = start
         self._clock0 = time.perf_counter()
-        if HAVE_AUDIO and rate == 1.0:
+        if HAVE_AUDIO and rate == 1.0 and not self.silent:
             self.start_audio(start)
         self.playing = True
         self.timer.start(max(5, int(1000 / proj.fps / 2)))
@@ -516,6 +517,11 @@ class ProgramMonitor(QWidget):
         ac = kf.animated(clip, t)
         r = self.view.target_rect()
         k = r.width() / proj.width
+        if ac.kind == "caption":  # altyazı: iz stilindeki konum (x, y)
+            from ..render import caption_box
+            b = caption_box(proj, ac, r.width(), r.height()).translated(r.topLeft())
+            c = b.center()
+            return c, [b.topLeft(), b.topRight(), b.bottomRight(), b.bottomLeft()], k, ac
         if ac.kind == "text":
             f = QFont()
             f.setPixelSize(max(1, int(ac.font_size * ac.scale * k)))
@@ -525,11 +531,11 @@ class ProgramMonitor(QWidget):
             w = max(fm.horizontalAdvance(x) for x in lines) + 8
             h = fm.height() * len(lines) + 4
         else:
-            m = proj.media.get(ac.media_id)
-            if m is None or not m.width:
+            mw, mh = proj.visual_size(ac)  # medya ya da iç içe sekans
+            if not mw or not mh:
                 return None
-            fit = min(proj.width / m.width, proj.height / m.height)
-            w, h = m.width * fit * ac.scale * k, m.height * fit * ac.scale * k
+            fit = min(proj.width / mw, proj.height / mh)
+            w, h = mw * fit * ac.scale * k, mh * fit * ac.scale * k
         c = QPointF(r.center().x() + ac.pos_x * k, r.center().y() + ac.pos_y * k)
         tr = QTransform()
         tr.translate(c.x(), c.y())
@@ -554,6 +560,8 @@ class ProgramMonitor(QWidget):
         p.drawPolygon(QPolygonF(corners))
         p.setPen(QPen(QColor("#4fc3f7"), 1.5))
         p.drawPolygon(QPolygonF(corners))
+        if clip.kind == "caption":
+            return
         h = self.HANDLE
         p.setBrush(QColor("#ffffff"))
         for pt in corners:
@@ -582,10 +590,10 @@ class ProgramMonitor(QWidget):
         from PySide6.QtCore import QPointF, QRectF
         from PySide6.QtGui import QPen, QPolygonF
         from ..masks import outline_path
-        if clip.kind != "media":
+        if clip.kind not in ("media", "nest"):
             return
         xf = self.mask_xform(g)
-        for m in clip.masks:
+        for m in self.shown_masks(clip):
             sel = m["id"] == self.sel_mask
             path = xf.map(outline_path(m))
             p.setBrush(Qt.NoBrush)
@@ -611,13 +619,20 @@ class ProgramMonitor(QWidget):
                 p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8) if i == 0 else
                            QRectF(q.x() - 3, q.y() - 3, 6, 6))
 
+    def shown_masks(self, clip):
+        """Oynatma kafasındaki maskeler (maske yolu anahtarlıysa o anki şekil)."""
+        if not clip.keyframes:
+            return clip.masks
+        t = min(max(self.main.timeline.playhead, clip.start), clip.end)
+        return kf.animated(clip, t).masks
+
     def _mask_hit(self, pos, clip, g):
         from PySide6.QtCore import QPointF
         from ..masks import outline_path
-        if clip.kind != "media" or not clip.masks:
+        if clip.kind not in ("media", "nest") or not clip.masks:
             return None
         xf = self.mask_xform(g)
-        order = sorted(clip.masks, key=lambda m: m["id"] != self.sel_mask)  # seçili önce
+        order = sorted(self.shown_masks(clip), key=lambda m: m["id"] != self.sel_mask)  # seçili önce
         for m in order:
             for i, (u, v) in enumerate(self.mask_handles(m)):
                 q = xf.map(QPointF(u, v))
@@ -654,6 +669,25 @@ class ProgramMonitor(QWidget):
             self.main.statusBar().clearMessage()
             self.view.update()
 
+    def pick_clip(self, pos):
+        """Monitörde tıklanan noktadaki en üstteki görünür klip (Premiere gibi: monitörde
+        tıklayınca seçilir, sonra sürüklenir)."""
+        from PySide6.QtGui import QPolygonF
+        m = self.main
+        if m.player.playing:
+            return None
+        proj, t = m.project, m.timeline.playhead
+        vis = [c for c in proj.clips if proj.track_is_video(c.track) and c.contains(t)
+               and not proj.tracks[c.track].muted and c.kind in ("media", "text", "caption",
+                                                                  "nest")]
+        # Altyazı izi en üstte çizilir; sonra büyük iz numarası üstte
+        vis.sort(key=lambda c: (c.kind == "caption", c.track), reverse=True)
+        for c in vis:
+            g = self.clip_geom(c)
+            if g is not None and QPolygonF(g[1]).containsPoint(pos, Qt.OddEvenFill):
+                return c
+        return None
+
     def _hit(self, pos):
         from PySide6.QtGui import QPolygonF
         clip = self.target_clip()
@@ -663,6 +697,10 @@ class ProgramMonitor(QWidget):
         if g is None:
             return None, None, None
         c, corners, k, ac = g
+        if clip.kind == "caption":
+            if QPolygonF(corners).containsPoint(pos, Qt.OddEvenFill):
+                return clip, "caption", g
+            return None, None, None
         for pt in corners:
             if abs(pt.x() - pos.x()) <= self.HANDLE + 2 and abs(pt.y() - pos.y()) <= self.HANDLE + 2:
                 return clip, "scale", g
@@ -681,7 +719,10 @@ class ProgramMonitor(QWidget):
         if mh is not None:
             return Qt.PointingHandCursor if mh[0] == "mask_pt" else Qt.SizeAllCursor
         _c, mode, _g = self._hit(pos)
-        return {"scale": Qt.SizeFDiagCursor, "move": Qt.SizeAllCursor}.get(mode, Qt.ArrowCursor)
+        if mode is None and self.pick_clip(pos) is not None:
+            return Qt.PointingHandCursor  # tıklayınca seçilir
+        return {"scale": Qt.SizeFDiagCursor, "move": Qt.SizeAllCursor,
+                "caption": Qt.SizeAllCursor}.get(mode, Qt.ArrowCursor)
 
     def begin_edit(self, pos):
         import copy
@@ -717,13 +758,30 @@ class ProgramMonitor(QWidget):
             return {"clip": tclip, "mode": kind, "mask": m, "idx": idx,
                     "orig": copy.deepcopy(m), "inv": inv, "uv0": inv.map(pos)}
         clip, mode, g = self._hit(pos)
-        if clip is None:
-            return None
+        picked = self.pick_clip(pos) if mode != "scale" else None
+        if clip is None or (picked is not None and picked is not clip):
+            # Tıklanan noktadaki en üstteki klibi seç (ör. arka plan seçiliyken yazıya
+            # tıklamak yazıyı seçer), hemen sürüklenebilsin
+            if picked is None:
+                return None
+            self.main.timeline.selected = {picked.id}
+            self.main._on_selection()
+            self.main.timeline.update()
+            self.view.update()
+            clip, mode, g = self._hit(pos)
+            if clip is None:
+                return None
         c, _corners, k, ac = g
         if not self.main._playhead_in(clip):
             return None
         self.main.before_edit()
         self.view.setToolTip("")
+        if mode == "caption":
+            from ..captions import style_of
+            st = style_of(self.main.project.tracks[clip.track])
+            r = self.view.target_rect()
+            return {"clip": clip, "mode": "caption", "p0": pos, "x": float(st["x"]),
+                    "y": float(st["y"]), "rw": r.width(), "rh": r.height()}
         return {"clip": clip, "mode": mode, "p0": pos, "c": c, "k": k,
                 "pos_x": ac.pos_x, "pos_y": ac.pos_y, "scale": ac.scale,
                 "d0": max(math.hypot(pos.x() - c.x(), pos.y() - c.y()), 1.0)}
@@ -732,18 +790,21 @@ class ProgramMonitor(QWidget):
         import math
         clip = e["clip"]
         if e["mode"] in ("mask_pt", "mask_move"):
-            m, o = e["mask"], e["orig"]
+            m, o = e["mask"], e["orig"]  # m: o anki (anahtarlıysa canlandırılmış) maske
             q = e["inv"].map(pos)
             u, v = q.x(), q.y()
+            poly = m.get("shape") == "polygon"
             if e["mode"] == "mask_move":
                 du, dv = u - e["uv0"].x(), v - e["uv0"].y()
-                if m.get("shape") == "polygon":
-                    m["points"] = [[round(x + du, 4), round(y + dv, 4)] for x, y in o["points"]]
+                if poly:
+                    val = [[round(x + du, 4), round(y + dv, 4)] for x, y in o["points"]]
                 else:
                     x0, y0, x1, y1 = o["box"]
-                    m["box"] = [x0 + du, y0 + dv, x1 + du, y1 + dv]
-            elif m.get("shape") == "polygon":
-                m["points"][e["idx"]] = [round(u, 4), round(v, 4)]
+                    val = [round(x0 + du, 4), round(y0 + dv, 4), round(x1 + du, 4),
+                           round(y1 + dv, 4)]
+            elif poly:
+                val = [list(pt) for pt in o["points"]]
+                val[e["idx"]] = [round(u, 4), round(v, 4)]
             else:
                 x0, y0, x1, y1 = o["box"]
                 i = e["idx"]  # 0 TL, 1 TR, 2 BR, 3 BL: karşı köşe sabit
@@ -755,8 +816,22 @@ class ProgramMonitor(QWidget):
                     y0 = v
                 else:
                     y1 = v
-                m["box"] = [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
+                val = [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
+            m["points" if poly else "box"] = val
+            # Maske yolu animasyonluysa oynatma kafasında anahtar kare oluşur/güncellenir
+            self.main.prop_edit(clip, f"mask.{m['id']}.{'points' if poly else 'box'}", val,
+                                push=False)
+            return
+        if e["mode"] == "caption":  # tüm altyazı izinin konumu (stil)
+            x = e["x"] + (pos.x() - e["p0"].x()) / e["rw"]
+            y = e["y"] + (pos.y() - e["p0"].y()) / e["rh"]
+            if abs(x - 0.5) < 0.015:  # ortaya yapış
+                x = 0.5
+            st = self.main.project.tracks[clip.track].style
+            st["x"] = round(min(max(x, 0.05), 0.95), 4)
+            st["y"] = round(min(max(y, 0.08), 1.0), 4)
             self.main.on_edited(refresh_inspector=False)
+            self.view.update()
             return
         if e["mode"] == "move":
             dx = (pos.x() - e["p0"].x()) / e["k"]

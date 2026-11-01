@@ -82,6 +82,9 @@ class Clip:
     text: str = ""
     font_size: int = 72
     color: str = "#ffffff"
+    # Altyazı kelime zamanları (vurgulu altyazı): [[başla, bitir, kelime], ...] klibin
+    # yerel zamanında (in_point ile aynı ölçek)
+    words: list = field(default_factory=list)
     # Çoklu kamera: mc = grup kimliği; in/out grup zamanındadır, gösterilen kamera mc_angle
     mc: str = ""
     mc_angle: int = 0
@@ -90,6 +93,7 @@ class Clip:
     masks: list = field(default_factory=list)
     matte: dict = field(default_factory=dict)  # {"track": iz, "type": alpha|luma, "invert"}
     audio_fx: list = field(default_factory=list)  # ses efektleri (audio.AUDIO_FX)
+    nest: str = ""  # iç içe sekans kimliği (kind == "nest")
     id: str = field(default_factory=new_id)
 
     @property
@@ -158,6 +162,8 @@ class Project:
         self.seq_in: float | None = None
         self.seq_out: float | None = None
         self.master_db = 0.0  # ana çıkış düzeyi
+        # İç içe sekanslar: {kimlik: {"name", "settings", "tracks", "clips", "markers", "hash"}}
+        self.nests: dict[str, dict] = {}
         self.add_track("video")
         self.add_track("video")
         self.add_track("audio")
@@ -270,6 +276,130 @@ class Project:
             return 0.0, self.duration
         return a, min(b, max(self.duration, b))
 
+    # ------------------------------------------------------------ iç içe sekanslar
+    def visual_size(self, clip: Clip):
+        """Görsel klibin kendi kare boyutu (medya ya da iç içe sekans)."""
+        if clip.kind == "nest":
+            n = self.nests.get(clip.nest) or {}
+            st = n.get("settings", {})
+            return st.get("width", self.width), st.get("height", self.height)
+        m = self.media.get(clip.media_id)
+        return (m.width, m.height) if m is not None and m.width else (None, None)
+
+    def nest_duration(self, nid: str) -> float:
+        n = self.nests.get(nid)
+        if not n:
+            return 0.0
+        end = 0.0
+        for c in n.get("clips", []):
+            sp = max(float(c.get("speed", 1.0)), 1e-6)
+            end = max(end, float(c.get("start", 0)) +
+                      (float(c.get("out_point", 0)) - float(c.get("in_point", 0))) / sp)
+        return end
+
+    def nest_project(self, nid: str) -> "Project":
+        """İç içe sekansı düzenlenebilir/çizilebilir bir Project olarak açar.
+        Medya, çoklu kamera ve iç içe sekans sözlükleri ana projeyle ortaktır."""
+        n = self.nests[nid]
+        child = Project.from_dict({"settings": n.get("settings", {}), "tracks": n["tracks"],
+                                   "clips": n["clips"], "markers": n.get("markers", [])})
+        child.media = self.media
+        child.multicams = self.multicams
+        child.nests = self.nests
+        child.nest_id = nid
+        return child
+
+    @staticmethod
+    def _content_hash(d: dict) -> str:
+        import hashlib
+        data = json.dumps([d.get("settings"), d.get("tracks"), d.get("clips")],
+                          sort_keys=True, default=str)
+        return hashlib.blake2b(data.encode(), digest_size=10).hexdigest()
+
+    def store_nest(self, nid: str, child: "Project", name: str | None = None):
+        """İçeride yapılan düzenlemeleri ana projeye yazar (medya ve diğer sekanslar dahil)."""
+        d = child.to_dict()
+        old = self.nests.get(nid, {})
+        n = {"name": name or old.get("name", "Nest"), "settings": d["settings"],
+             "tracks": d["tracks"], "clips": d["clips"], "markers": d["markers"]}
+        n["hash"] = self._content_hash(n)
+        if child.media is not self.media:  # geri al sonrası kopya olabilir
+            for k, m in child.media.items():
+                self.media.setdefault(k, m)
+        if child.nests is not self.nests:
+            for k, v in child.nests.items():
+                if k != nid:
+                    self.nests[k] = v
+        if child.multicams is not self.multicams:
+            self.multicams.update(child.multicams)
+        self.nests[nid] = n
+
+    def nest_clips(self, clip_ids, name: str = "Nest") -> list[Clip]:
+        """Premiere "İç İçe Sekans": seçili klipleri (bağlılarıyla) yeni bir sekansa taşır ve
+        zaman çizelgesinde onların yerine tek bir (görüntü + ses) iç içe klip koyar."""
+        ids = set(clip_ids)
+        for c in list(self.clips):
+            if c.id in ids:
+                ids |= {x.id for x in self.linked(c)}
+        group = [c for c in self.clips if c.id in ids]
+        if not group:
+            return []
+        t0 = min(c.start for c in group)
+        t1 = max(c.end for c in group)
+        nid = new_id()
+        inner = Project(self.width, self.height, self.fps, self.sample_rate)
+        inner.tracks = copy.deepcopy(self.tracks)  # iz düzeni aynen korunur
+        for t in inner.tracks:
+            t.locked = False
+        for c in group:
+            k = copy.deepcopy(c)
+            k.start -= t0
+            k.link_id = k.link_id  # bağlar iç sekansta da geçerli
+            inner.clips.append(k)
+        inner.media = self.media
+        self.nests[nid] = {}
+        self.store_nest(nid, inner, name)
+        self.clips = [c for c in self.clips if c.id not in ids]
+        vis = [c for c in group if self.track_is_video(c.track)]
+        aud = [c for c in group if not self.track_is_video(c.track)]
+        link = new_id() if (vis and aud) else ""
+        made = []
+        for lst in (vis, aud):
+            if not lst:
+                continue
+            tr = min(c.track for c in lst)
+            nc = Clip(track=tr, start=t0, in_point=0.0, out_point=t1 - t0, kind="nest",
+                      name=name, link_id=link, nest=nid)
+            self._clear_space(nc.track, nc.start, nc.end)
+            self.clips.append(nc)
+            made.append(nc)
+        return made
+
+    def unnest(self, clip: Clip) -> list[Clip]:
+        """İç içe klibi açar: içindeki klipleri (kırpılan aralıkla) ana sekansa geri koyar."""
+        if clip.kind != "nest" or clip.nest not in self.nests:
+            return []
+        child = self.nest_project(clip.nest)
+        a, b = clip.in_point, clip.out_point
+        out = []
+        group = [x for x in self.linked(clip) if x.kind == "nest" and x.nest == clip.nest]
+        self.clips = [c for c in self.clips if c not in group]
+        for c in child.clips:
+            if c.end <= a or c.start >= b or c.track >= len(self.tracks):
+                continue
+            k = copy.deepcopy(c)
+            if k.start < a:
+                k.in_point += (a - k.start) * k.speed
+                k.start = a
+            if k.end > b:
+                k.out_point -= (k.end - b) * k.speed
+            k.start = clip.start + (k.start - a)
+            k.id = new_id()
+            self._clear_space(k.track, k.start, k.end)
+            self.clips.append(k)
+            out.append(k)
+        return out
+
     # ------------------------------------------------------------ altyazılar
     def caption_tracks(self) -> list[int]:
         return [i for i, t in enumerate(self.tracks) if t.kind == "video" and t.captions]
@@ -298,11 +428,14 @@ class Project:
             self.clips = [c for c in self.clips if c.track != ti]
         made = []
         for cue in cues:
-            a, b, text = (cue.start, cue.end, cue.text) if hasattr(cue, "text") else cue
+            a, b, text = (cue.start, cue.end, cue.text) if hasattr(cue, "text") else cue[:3]
+            words = getattr(cue, "words", None) or (cue[3] if not hasattr(cue, "text")
+                                                    and len(cue) > 3 else None) or []
             if b - a < 1.0 / self.fps:
                 continue
             c = Clip(track=ti, start=float(a), in_point=0.0, out_point=float(b - a),
-                     kind="caption", name=text.replace("\n", " ")[:40], text=text)
+                     kind="caption", name=text.replace("\n", " ")[:40], text=text,
+                     words=[[float(w[0]), float(w[1]), str(w[2])] for w in words])
             self._clear_space(ti, c.start, c.end)
             self.clips.append(c)
             made.append(c)
@@ -417,6 +550,8 @@ class Project:
     def max_out(self, clip: Clip) -> float:
         if clip.kind in ("text", "caption"):
             return 3600.0
+        if clip.kind == "nest":
+            return self.nest_duration(clip.nest)
         if clip.mc and clip.mc in self.multicams:
             return self.multicam_duration(self.multicams[clip.mc])
         m = self.media.get(clip.media_id)
@@ -783,6 +918,7 @@ class Project:
             "multicams": self.multicams,
             "seq_in": self.seq_in,
             "master_db": self.master_db,
+            "nests": {k: dict(v) for k, v in self.nests.items()},
             "seq_out": self.seq_out,
         }
 
@@ -801,6 +937,8 @@ class Project:
         p.multicams = {k: v for k, v in (data.get("multicams") or {}).items()
                        if isinstance(v, dict) and isinstance(v.get("angles"), list)}
         p.master_db = float(data.get("master_db", 0.0) or 0.0)
+        p.nests = {k: v for k, v in (data.get("nests") or {}).items()
+                   if isinstance(v, dict) and isinstance(v.get("clips"), list)}
         for k in ("seq_in", "seq_out"):
             v = data.get(k)
             setattr(p, k, float(v) if isinstance(v, (int, float)) else None)

@@ -41,12 +41,34 @@ def high_bit(frame) -> bool:
         return False
 
 
+_D16: dict = {}
+
+
+def _dither16(shape):
+    """effects._dither ile aynı desen, 16 bit tamsayı ölçeğinde (0..~257)."""
+    d = _D16.get(shape)
+    if d is None:
+        d = ((fx._dither(shape) + 0.6) * (257 / 1.2)).astype(np.uint32)
+        if len(_D16) > 6:
+            _D16.clear()
+        _D16[shape] = d
+    return d
+
+
 def read_high_bit(frame, w: int, h: int, alpha: bool, k: int = 0) -> np.ndarray:
     """10/12-bit kareyi 16-bit okuyup dither'lı olarak 8-bit'e indirir: kaybolacak ara tonlar
     ince grene dönüşür, sonradan kontrast açılınca bantlanma oluşmaz."""
-    a = oriented_array(frame, w, h, "rgb48le", k).astype(np.float32) * (1 / 257)
-    a += fx._dither((h, w))
-    rgb = np.clip(np.rint(a), 0, 255).astype(np.uint8)
+    src = oriented_array(frame, w, h, "rgb48le", k)
+    rgb = np.empty(src.shape, np.uint8)
+    from .parallel import rows
+
+    def part(s16, out, d):
+        a = s16.astype(np.uint32)
+        a += d  # tamsayı dither: float'tan ~2 kat hızlı, sonuç aynı (±1)
+        a //= 257
+        np.minimum(a, 255, out=a)
+        out[...] = a
+    rows(part, src, rgb, _dither16((h, w)))
     if not alpha:
         return rgb
     out = np.empty((h, w, 4), np.uint8)
@@ -86,6 +108,47 @@ def adjust_color16(arr: np.ndarray, clip: Clip) -> np.ndarray:
 DEEP_EFFECTS = {"lumetri"}  # 16 bit yolda doğrudan uygulanabilen efektler
 
 
+def caption_layout(project, clip, out_w: int, out_h: int):
+    """Altyazının yazı tipi ve satırları: (font, metrics, [[(kelime_sırası, kelime)]], stil)."""
+    from .captions import style_of, upper
+    from PySide6.QtGui import QFontMetricsF
+    tr = project.tracks[clip.track] if clip.track < len(project.tracks) else None
+    st = style_of(tr)
+    font = QFont()
+    font.setPixelSize(max(6, int(st["size"] * out_h)))
+    font.setBold(bool(st["bold"]))
+    fm = QFontMetricsF(font)
+    maxw = st["width"] * out_w
+    text = clip.text or ""
+    if st.get("uppercase"):
+        text = upper(text)
+    lines, k = [], 0
+    for para in text.split("\n"):  # uzun satırları kelimeden sar
+        cur: list = []
+        for w in para.split():
+            cand = " ".join(x[1] for x in cur + [(k, w)])
+            if cur and fm.horizontalAdvance(cand) > maxw:
+                lines.append(cur)
+                cur = []
+            cur.append((k, w))
+            k += 1
+        lines.append(cur)
+    lines = [ln for ln in lines if ln] or [[]]
+    return font, fm, lines, st
+
+
+def caption_box(project, clip, out_w: int, out_h: int) -> QRectF:
+    """Altyazının kare içindeki kapladığı dikdörtgen (monitörde sürükleme için)."""
+    _f, fm, lines, st = caption_layout(project, clip, out_w, out_h)
+    lh = fm.height()
+    w = max([fm.horizontalAdvance(" ".join(x[1] for x in ln)) for ln in lines] + [lh])
+    pad = lh * 0.35
+    cx = float(st.get("x", 0.5)) * out_w
+    bottom = st["y"] * out_h
+    return QRectF(cx - w / 2 - pad, bottom - lh * len(lines) - pad * 0.3,
+                  w + 2 * pad, lh * len(lines) + pad * 0.6)
+
+
 class Compositor:
     def __init__(self, project: Project, pool: SourcePool | None = None, deep: bool = False):
         self.project = project
@@ -123,10 +186,17 @@ class Compositor:
             return None
         return st[1] if st[0] == "clip" else (st[2] or st[1])
 
-    def compose(self, t: float, out_w: int, out_h: int) -> QImage:
+    def compose(self, t: float, out_w: int, out_h: int, transparent: bool = False) -> QImage:
+        """t anındaki kare. transparent: boş yerler saydam (iç içe sekans katmanı için)."""
         p = self.project
-        img = QImage(out_w, out_h, QImage.Format_RGBX64 if self.deep else QImage.Format_RGB32)
-        img.fill(QColor(0, 0, 0))
+        if transparent:
+            img = QImage(out_w, out_h, QImage.Format_RGBA64_Premultiplied if self.deep
+                         else QImage.Format_ARGB32_Premultiplied)
+            img.fill(Qt.transparent)
+        else:
+            img = QImage(out_w, out_h, QImage.Format_RGBX64 if self.deep
+                         else QImage.Format_RGB32)
+            img.fill(QColor(0, 0, 0))
         painter = QPainter(img)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -180,7 +250,7 @@ class Compositor:
 
     def draw_clip(self, painter: QPainter, clip: Clip, t: float, out_w: int, out_h: int):
         if clip.kind == "caption":
-            self._draw_caption(painter, clip, out_w, out_h)
+            self._draw_caption(painter, clip, out_w, out_h, t)
             return
         mt = clip.matte or {}
         if mt.get("track", -1) is not None and mt.get("track", -1) >= 0 \
@@ -226,8 +296,64 @@ class Compositor:
             self._draw_media(painter, clip, t, k)
         painter.restore()
 
+    # ------------------------------------------------------------ iç içe sekanslar
+    def nest_comp(self, nid: str):
+        """İç içe sekansın kendi Compositor'ı (içerik özeti değişince yeniden kurulur)."""
+        n = self.project.nests.get(nid)
+        if not n:
+            return None
+        cache = self.__dict__.setdefault("_nests", {})
+        hit = cache.get(nid)
+        if hit is None or hit[0] != n.get("hash"):
+            child = self.project.nest_project(nid)
+            comp = Compositor(child, self.pool, deep=self.deep)
+            comp._depth = getattr(self, "_depth", 0) + 1
+            hit = (n.get("hash"), comp)
+            cache[nid] = hit
+        hit[1].deep = self.deep
+        return hit[1]
+
+    def _draw_nest(self, painter: QPainter, clip: Clip, t: float, k: float):
+        if getattr(self, "_depth", 0) > 8:  # kendini içeren (bozuk) dosyaya karşı
+            return
+        comp = self.nest_comp(clip.nest)
+        if comp is None:
+            return
+        p = self.project
+        st = clip.source_time(t)
+        if st < -1e-6 or st > p.nest_duration(clip.nest) + 1e-6:
+            return
+        cw, ch = comp.project.width, comp.project.height
+        fit = min(p.width / cw, p.height / ch)
+        s = fit * clip.scale * k
+        dw, dh = max(2, int(round(cw * s))), max(2, int(round(ch * s)))
+        tw, th = min(dw, cw), min(dh, ch)  # gerekenden büyük çizme
+        img = comp.compose(st, tw, th, transparent=True)
+        effects = [e for e in clip.effects if e.get("enabled", True)]
+        masked = any(m.get("enabled", True) for m in clip.masks or [])
+        if effects or masked or clip.brightness or clip.contrast != 1 or clip.saturation != 1:
+            # Efekt/maske/renk: katmanı diziye çevirip medya klipleriyle aynı işlemler
+            rgba = img.convertToFormat(QImage.Format_RGBA8888)
+            bpl = rgba.bytesPerLine()
+            arr = np.frombuffer(rgba.constBits(), np.uint8, count=bpl * th).reshape(
+                th, bpl)[:, :tw * 4].reshape(th, tw, 4).copy()
+            arr = adjust_color(arr, clip)
+            if effects:
+                arr = fx.apply_effects(arr, effects, {"scale": tw / max(cw * fit * clip.scale,
+                                                                        1e-6), "t": t})
+            if masked:
+                from .masks import mask_alpha
+                ma = mask_alpha(clip.masks, tw, th, tw / max(cw * fit * clip.scale, 1e-6))
+                arr[..., 3] = (arr[..., 3].astype(np.float32) * ma + 0.5).astype(np.uint8)
+            arr = np.ascontiguousarray(arr)
+            img = QImage(arr.data, tw, th, arr.strides[0], QImage.Format_RGBA8888).copy()
+        painter.drawImage(QRectF(-dw / 2, -dh / 2, dw, dh), img)
+
     def _draw_media(self, painter: QPainter, clip: Clip, t: float, k: float):
         p = self.project
+        if clip.kind == "nest":
+            self._draw_nest(painter, clip, t, k)
+            return
         media = p.media.get(clip.media_id)
         if media is None:
             return
@@ -325,37 +451,24 @@ class Compositor:
         painter.setBrush(QColor(clip.color))
         painter.drawPath(path)
 
-    def _draw_caption(self, painter: QPainter, clip: Clip, out_w: int, out_h: int):
-        """Altyazı: iz stilinde, kare altında ortalı, gerekirse satırlara sarılmış."""
-        from .captions import style_of
-        from PySide6.QtGui import QFontMetricsF
-        tr = self.project.tracks[clip.track] if clip.track < len(self.project.tracks) else None
-        st = style_of(tr)
-        font = QFont()
-        font.setPixelSize(max(6, int(st["size"] * out_h)))
-        font.setBold(bool(st["bold"]))
-        fm = QFontMetricsF(font)
-        maxw = st["width"] * out_w
-        lines = []
-        for para in (clip.text or "").split("\n"):  # uzun satırları kelimeden sar
-            cur = ""
-            for w in para.split():
-                cand = (cur + " " + w).strip()
-                if cur and fm.horizontalAdvance(cand) > maxw:
-                    lines.append(cur)
-                    cur = w
-                else:
-                    cur = cand
-            lines.append(cur)
-        lines = [ln for ln in lines if ln] or [""]
+    def _draw_caption(self, painter: QPainter, clip: Clip, out_w: int, out_h: int,
+                      t: float | None = None):
+        """Altyazı: iz stilinde, kare altında ortalı, gerekirse satırlara sarılmış.
+        Kelime vurgusu açıksa o an konuşulan kelime renklenir (ya da kutulanır)."""
+        from .captions import active_word
+        font, fm, lines, st = caption_layout(self.project, clip, out_w, out_h)
+        hi = active_word(clip, t) if (st.get("highlight") and t is not None) else -1
+        hcol = QColor(st.get("highlight_color") or "#ffd60a")
         lh = fm.height()
         bottom = st["y"] * out_h
         top = bottom - lh * len(lines)
         pad_x, pad_y = lh * 0.35, lh * 0.08
+        space = fm.horizontalAdvance(" ")
         painter.save()
-        for i, line in enumerate(lines):
+        for i, toks in enumerate(lines):
+            line = " ".join(w for _k, w in toks)
             w = fm.horizontalAdvance(line)
-            x = (out_w - w) / 2
+            x = float(st.get("x", 0.5)) * out_w - w / 2
             y = top + i * lh
             if st["box"]:
                 bc = QColor(st["box_color"])
@@ -364,16 +477,35 @@ class Compositor:
                 painter.setBrush(bc)
                 painter.drawRoundedRect(QRectF(x - pad_x, y - pad_y, w + 2 * pad_x,
                                                lh + 2 * pad_y), lh * 0.15, lh * 0.15)
-            path = QPainterPath()
-            path.addText(QPointF(x, y + fm.ascent()), font, line)
-            if st["outline"]:
-                painter.setPen(QPen(QColor(0, 0, 0, 220), max(1.0, font.pixelSize() / 14),
-                                    Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                painter.setBrush(Qt.NoBrush)
+            # Kelimeleri tek tek yerleştir (vurgulanan kelimenin yerini bilmek için)
+            cx = x
+            for idx, word in toks:
+                ww = fm.horizontalAdvance(word)
+                on = idx == hi
+                if on and st.get("highlight_box"):
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(hcol)
+                    r = lh * 0.12
+                    painter.drawRoundedRect(QRectF(cx - r * 1.4, y + pad_y * 0.5,
+                                                   ww + r * 2.8, lh - pad_y),
+                                            lh * 0.18, lh * 0.18)
+                path = QPainterPath()
+                path.addText(QPointF(cx, y + fm.ascent()), font, word)
+                if st["outline"] and not (on and st.get("highlight_box")):
+                    painter.setPen(QPen(QColor(0, 0, 0, 220), max(1.0, font.pixelSize() / 14),
+                                        Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawPath(path)
+                painter.setPen(Qt.NoPen)
+                if on and not st.get("highlight_box"):
+                    painter.setBrush(hcol)
+                elif on:  # kutunun üstünde okunaklı: koyu yazı
+                    lum = 0.299 * hcol.red() + 0.587 * hcol.green() + 0.114 * hcol.blue()
+                    painter.setBrush(QColor("#111111") if lum > 150 else QColor("#ffffff"))
+                else:
+                    painter.setBrush(QColor(st["color"]))
                 painter.drawPath(path)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(st["color"]))
-            painter.drawPath(path)
+                cx += ww + space
         painter.restore()
 
     # ------------------------------------------------------------ ses
@@ -396,6 +528,19 @@ class Compositor:
     def _clip_samples(self, c: Clip, src, s: float, count: int) -> np.ndarray:
         """Klibin zaman çizelgesi s anından itibaren count örneği (hız dahil)."""
         sr = self.project.sample_rate
+        if c.kind == "nest":
+            comp = self.nest_comp(c.nest)
+            if comp is None or getattr(self, "_depth", 0) > 8:
+                return np.zeros((count, 2), np.float32)
+            st = c.source_time(s)
+            if abs(c.speed - 1.0) < 1e-6:
+                return comp.mix(st, count)
+            m = int(math.ceil(count * c.speed)) + 1
+            raw = comp.mix(st, m)
+            xs = np.linspace(0, (count - 1) * c.speed, count) if count > 1 else np.zeros(1)
+            idx = np.arange(m)
+            return np.stack([np.interp(xs, idx, raw[:, 0]),
+                             np.interp(xs, idx, raw[:, 1])], axis=1).astype(np.float32)
         st = c.source_time(s) - self.project.media_offset(c)
         if abs(c.speed - 1.0) < 1e-6:
             return src.read(st, count)
@@ -431,12 +576,15 @@ class Compositor:
                 lo, hi, tin, tnx, tout = self.clip_audio_span(c)
                 if hi <= t or lo >= t1:
                     continue
-                media = p.media.get(c.media_id)
-                if media is None:
-                    continue
-                src = self.pool.audio_source(media)
-                if src is None:
-                    continue
+                if c.kind == "nest":
+                    src = None
+                else:
+                    media = p.media.get(c.media_id)
+                    if media is None:
+                        continue
+                    src = self.pool.audio_source(media)
+                    if src is None:
+                        continue
                 s0 = max(t, lo)
                 s1 = min(t1, hi)
                 i0 = int(round((s0 - t) * sr))

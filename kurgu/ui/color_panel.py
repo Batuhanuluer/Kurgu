@@ -19,7 +19,7 @@ from .. import effects as fx
 from .. import grading as gr
 from .. import keyframes as kf
 from ..i18n import _
-from .panels import SliderRow
+from .panels import AnimRow, SliderRow
 
 
 # ------------------------------------------------------------ renk tekerleği
@@ -349,6 +349,7 @@ class ColorPanel(QScrollArea):
         wl = QHBoxLayout(wheels)
         self.wheels = {}
         self.wheel_luma = {}
+        self.wheel_anim = {}
         for key, label in gr.WHEELS:
             col = QVBoxLayout()
             t = QLabel(_(label))
@@ -356,8 +357,12 @@ class ColorPanel(QScrollArea):
             col.addWidget(t)
             w = ColorWheel()
             w.pressed.connect(lambda k=key: self._push(k, force=True))
-            w.changed.connect(lambda x, y, k=key: self._set_list(k, [x, y]))
+            w.changed.connect(lambda x, y, k=key: self._set_wheel(k, [x, y]))
             col.addWidget(w, 1)
+            ar = AnimRow(self, lambda k=key: kf.fx_prop(self.effect(create=True), k), None, "")
+            ar.setToolTip(_("Animate this wheel (stopwatch)"))
+            self.wheel_anim[key] = ar
+            col.addWidget(ar)
             sl = LumaSlider(lambda v, k=key + "_luma": self._set(k, v))
             sl.sliderPressed.connect(lambda k=key + "_luma": self._push(k))
             col.addWidget(sl)
@@ -424,6 +429,7 @@ class ColorPanel(QScrollArea):
         ch = gr.CURVES[self.curve_tabs.currentIndex()]
         self.curve.set_points(ch, p[ch], {k: p[k] for k in gr.CURVES})
         self._loading = False
+        self.sync_keys()
 
     def sync_time(self, t):
         if self.clip is not None and self.clip.keyframes:
@@ -451,6 +457,32 @@ class ColorPanel(QScrollArea):
         self.main.prop_edit(self.clip, kf.fx_prop(e, key), float(value), push=not created)
         if created:
             self.main.on_edited()
+
+    def _set_wheel(self, key, value):
+        """Renk tekerleği: animasyonluysa oynatma kafasında anahtar kare."""
+        if self._loading or self.clip is None:
+            return
+        e = self.effect(create=True)
+        self.main.prop_edit(self.clip, kf.fx_prop(e, key), [float(value[0]), float(value[1])],
+                            push=False)
+        self.sync_keys()
+
+    def sync_keys(self):
+        c = self.clip
+        if c is None:
+            return
+        t = self.main.timeline.playhead
+        fps = self.main.project.fps
+        e = self.effect()
+        for key, ar in self.wheel_anim.items():
+            ar.setEnabled(self.widget().isEnabled())
+            if e is None:  # henüz Lumetri yok: kronometre kapalı görünsün
+                ar.watch.setChecked(False)
+                ar.watch.setStyleSheet("")
+                for b in (ar.prev, ar.key, ar.next):
+                    b.setVisible(False)
+            else:
+                ar.sync(c, t, fps)
 
     def _set_list(self, key, value):
         if self._loading or self.clip is None:

@@ -191,20 +191,32 @@ class AudioSource:
         self._buf_t = -1.0
         self._eof = False
 
-    def _decode_more(self) -> bool:
-        try:
-            frame = next(self._decoder)
-        except (StopIteration, av.error.EOFError):
-            self._eof = True
-            return False
-        ft = (frame.time if frame.time is not None else 0.0) - self.start
-        frame.pts = None
-        for rf in self._resampler.resample(frame):
-            arr = rf.to_ndarray().reshape(-1, 2).astype(np.float32)
-            if self._buf_t < 0:
-                self._buf_t = ft
-            self._buf = np.concatenate([self._buf, arr])
-        return True
+    def _decode_more(self, need: int = 0) -> bool:
+        """En az 'need' örnek daha çöz (paketleri listede biriktirip bir kez birleştirir;
+        her pakette tüm tamponu kopyalamak uzun kayıtlarda karesel yavaşlardı)."""
+        parts = [self._buf]
+        got = 0
+        ok = True
+        while True:
+            try:
+                frame = next(self._decoder)
+            except (StopIteration, av.error.EOFError):
+                self._eof = True
+                ok = False
+                break
+            ft = (frame.time if frame.time is not None else 0.0) - self.start
+            frame.pts = None
+            for rf in self._resampler.resample(frame):
+                arr = rf.to_ndarray().reshape(-1, 2).astype(np.float32)
+                if self._buf_t < 0:
+                    self._buf_t = ft
+                parts.append(arr)
+                got += len(arr)
+            if got >= need:
+                break
+        if len(parts) > 1:
+            self._buf = np.concatenate(parts)
+        return ok
 
     def read(self, t: float, n: int) -> np.ndarray:
         """t saniyesinden başlayarak n örnek (n, 2) döndürür."""
@@ -225,7 +237,8 @@ class AudioSource:
             self._seek(t)
         while not self._eof and (self._buf_t < 0 or
                                  self._buf_t + len(self._buf) / self.sr < t + n / self.sr):
-            self._decode_more()
+            have_end = self._buf_t + len(self._buf) / self.sr if self._buf_t >= 0 else t
+            self._decode_more(int((t + n / self.sr - have_end) * self.sr) + 1)
         if self._buf_t < 0:
             return out
         offset = int(round((t - self._buf_t) * self.sr))
