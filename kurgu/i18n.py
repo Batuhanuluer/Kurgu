@@ -114,6 +114,20 @@ TR = {
     "Playback": "Oynatma", "Full": "Tam",
     "Playback resolution: lower = smoother playback with heavy effects":
         "Oynatma çözünürlüğü: düşük = ağır efektlerde daha akıcı oynatma",
+    "Unlinked: video and audio can now be selected separately":
+        "Bağlantı kaldırıldı: görüntü ve ses artık ayrı ayrı seçilebilir",
+    "Link": "Bağla",
+    "Auto Save": "Otomatik Kaydetme", "Off": "Kapalı", "Every {n} min": "Her {n} dakikada",
+    "Open Auto-Saved Project…": "Otomatik Kaydedilen Projeyi Aç…",
+    "Auto saved": "Otomatik kaydedildi", "Auto save failed": "Otomatik kaydetme başarısız",
+    "Recover project": "Projeyi kurtar", "Kurgu did not close properly last time.":
+        "Kurgu geçen sefer düzgün kapanmadı.",
+    "An auto-saved copy of “{name}” from {when} is available. Open it?":
+        "“{name}” projesinin {when} tarihli otomatik kaydı bulundu. Açılsın mı?",
+    "Recover": "Kurtar", "Not now": "Şimdi değil", "Untitled project": "Adsız proje",
+    "recovered": "kurtarıldı",
+    "Recovered project opened. Save it (Ctrl+S) to keep the changes.":
+        "Kurtarılan proje açıldı. Değişiklikleri korumak için kaydedin (Ctrl+S).",
     "Gap": "Boşluk", "Ripple Delete Gap": "Boşluğu Sil (Kaydırarak)", "Gap closed": "Boşluk kapatıldı",
     "Can't close the gap: linked clips on another track would overlap":
         "Boşluk kapatılamadı: başka izdeki bağlı klipler üst üste binecek",

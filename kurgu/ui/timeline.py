@@ -612,7 +612,11 @@ class TimelineWidget(QWidget):
             mode = "move"
         self._drag = {"mode": mode, "clip": clip.id, "x0": pos.x(), "y0": pos.y(),
                       "start0": clip.start, "pushed": False,
-                      "grab": self.t_of(pos.x()) - clip.start}
+                      "grab": self.t_of(pos.x()) - clip.start,
+                      # Zaten seçili bir klibe düz tıklama: sürüklenmezse bırakınca
+                      # seçim yalnızca bu klibe (ve hâlâ bağlıysa eşine) iner
+                      "narrow": not (ev.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier))
+                      and len(self.selected) > len(group)}
         self.update()
 
     def _begin_drag_edit(self):
@@ -666,7 +670,8 @@ class TimelineWidget(QWidget):
             return
         if abs(pos.x() - d["x0"]) < 3 and abs(pos.y() - d["y0"]) < 3 and not d["pushed"]:
             return
-        excl = {c.id for c in self.project.linked(clip)}
+        excl = {c.id for c in (self.drag_group(clip) if d["mode"] == "move"
+                               else self.project.linked(clip))}
         if d["mode"] == "move":
             self._begin_drag_edit()
             t = self.t_of(pos.x()) - d["grab"]
@@ -675,7 +680,7 @@ class TimelineWidget(QWidget):
             t = s_start if abs(s_start - t) <= abs(s_end - t) else s_end
             # Önizleme için yalnızca konumu değiştir; üzerine yazma bırakınca yapılır.
             delta = max(t, 0) - clip.start
-            group = self.project.linked(clip)
+            group = self.drag_group(clip)
             if min(c.start for c in group) + delta < 0:
                 delta = -min(c.start for c in group)
             for c in group:
@@ -706,17 +711,32 @@ class TimelineWidget(QWidget):
         self.snap_hit = None
         if d and d["mode"] == "trans_dur":
             self.selection_changed.emit()
+        if d and d.get("narrow") and not d.get("pushed"):
+            clip = self.project.clip_by_id(d["clip"])
+            if clip is not None:
+                self.selected = {c.id for c in self.project.linked(clip)}
+                self.selection_changed.emit()
         if d and d["mode"] == "move" and d.get("pushed"):
             clip = self.project.clip_by_id(d["clip"])
             if clip is not None:
-                # Son konumu kesinleştir: üst üste binen klipler kırpılır.
-                start = clip.start
-                track = clip.track
-                clip.start = start  # move() delta=0 ile üzerine yazmayı uygular
-                self.project.move(clip, start, track)
+                # Son konumu kesinleştir: taşınan kliplerin altında kalanlar kırpılır.
+                group = self.drag_group(clip)
+                ids = {c.id for c in group}
+                for c in group:
+                    self.project._clear_space(c.track, c.start, c.end, ignore=ids)
             self.edited.emit()
             self.selection_changed.emit()
         self.update()
+
+    def drag_group(self, clip: Clip) -> list[Clip]:
+        """Sürüklenince birlikte hareket edenler: bağlı klipler + seçili tüm klipler."""
+        proj = self.project
+        ids = {c.id for c in proj.linked(clip)}
+        if clip.id in self.selected:
+            for c in proj.clips:
+                if c.id in self.selected and not proj.tracks[c.track].locked:
+                    ids |= {x.id for x in proj.linked(c)}
+        return [c for c in proj.clips if c.id in ids]
 
     def _key_edit(self, clip, fn):
         self.main.before_edit()
@@ -829,6 +849,8 @@ class TimelineWidget(QWidget):
                               lambda c=vc: self.main.remove_effect(c, None))
             if clip.link_id:
                 menu.addAction(_("Unlink"), self.main.unlink_selected)
+            elif len(self.selected) >= 2:
+                menu.addAction(_("Link"), self.main.link_selected)
             menu.addSeparator()
             menu.addAction(_("Delete"), self.main.delete_selected)
             menu.addAction(_("Ripple Delete"), lambda: self.main.delete_selected(ripple=True))

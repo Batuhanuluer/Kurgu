@@ -17,6 +17,7 @@ from ..media import probe, thumbnail
 from ..model import History, MediaItem, Project, new_id
 from ..render import export
 from .. import effects as fx
+from .. import autosave
 from .. import keyframes as kf
 from ..rendercache import FrameCache, FrameSig, RenderWorker, heavy_frames, heavy_intervals
 from .. import transitions
@@ -190,8 +191,20 @@ class MainWindow(QMainWindow):
         geo = self.settings.value("geometry")
         if geo:
             self.restoreGeometry(geo)
+        # Otomatik kaydetme ve çökme kurtarma (proje açılmadan önce hazır olmalı)
+        self.session = autosave.Session()
+        crashed = self.session.crashed_sessions()
+        self.session.start()
         if path:
             self.open_project(path)
+        from PySide6.QtCore import QTimer
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self.do_autosave)
+        self.set_autosave_interval(int(self.settings.value("autosave_min", 2)))
+        from .. import app as _app
+        _app.EMERGENCY.append(self.emergency_save)
+        if crashed:
+            QTimer.singleShot(300, lambda: self.offer_recovery(crashed))
         self._update_title()
         self.statusBar().showMessage(_("Ready"))
         self.monitor.refresh(0.0)
@@ -228,6 +241,19 @@ class MainWindow(QMainWindow):
         f.addSeparator()
         self._act(f, _("Import Media…"), self.import_dialog, "Ctrl+I")
         self._act(f, _("Export…"), self.export_dialog, "Ctrl+M")
+        f.addSeparator()
+        am = f.addMenu(_("Auto Save"))
+        grp = QActionGroup(self)
+        current = int(self.settings.value("autosave_min", 2))
+        for mins in (0, 1, 2, 5, 10):
+            label = _("Off") if mins == 0 else _("Every {n} min").format(n=mins)
+            a = am.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(mins == current)
+            a.triggered.connect(lambda _c=False, m=mins: self.set_autosave_interval(m))
+            grp.addAction(a)
+        am.addSeparator()
+        am.addAction(_("Open Auto-Saved Project…"), self.open_autosave_dialog)
         f.addSeparator()
         self._act(f, _("Quit"), self.close, QKeySequence.Quit)
 
@@ -301,6 +327,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ durum
     def _update_title(self):
         name = os.path.basename(self.project.path) if self.project.path else "Untitled"
+        if getattr(self.project, "recovered", False):
+            name += " [" + _("recovered") + "]"
         self.setWindowTitle(f"{'• ' if self.dirty else ''}{name} — Kurgu {__version__}")
 
     def before_edit(self):
@@ -662,6 +690,71 @@ class MainWindow(QMainWindow):
             self.timeline.set_playhead(target)
             self.timeline.ensure_visible(target)
 
+    # ------------------------------------------------------------ otomatik kaydetme
+    def set_autosave_interval(self, minutes: int):
+        self.settings.setValue("autosave_min", minutes)
+        self.autosave_timer.stop()
+        if minutes > 0:
+            self.autosave_timer.start(minutes * 60 * 1000)
+
+    def do_autosave(self, tag="auto") -> str | None:
+        p = self.project
+        if not self.dirty or not (p.clips or p.media):
+            return None
+        try:
+            path = autosave.write_autosave(p, tag)
+        except OSError as e:
+            self.statusBar().showMessage(f"{_('Auto save failed')}: {e}", 8000)
+            return None
+        self.session.update(uid=p.uid, project_path=p.path, last_autosave=path)
+        import time as _t
+        self.statusBar().showMessage(_("Auto saved") + " " + _t.strftime("%H:%M"), 4000)
+        return path
+
+    def emergency_save(self):
+        """Beklenmeyen bir hata olduğunda hemen yedek al."""
+        try:
+            self.do_autosave("crash")
+        except Exception:
+            pass
+
+    def offer_recovery(self, crashed):
+        import time as _t
+        best = None
+        for info in crashed:
+            cand = autosave.recovery_candidate(info)
+            if cand and (best is None or cand["mtime"] > best["mtime"]):
+                best = cand
+        for info in crashed:
+            autosave.Session.discard(info)
+        if best is None:
+            return
+        name = os.path.basename(best["original"]) if best["original"] else _("Untitled project")
+        when = _t.strftime("%d.%m.%Y %H:%M", _t.localtime(best["mtime"]))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(_("Recover project"))
+        box.setText(_("Kurgu did not close properly last time."))
+        box.setInformativeText(_("An auto-saved copy of “{name}” from {when} is available. "
+                                 "Open it?").format(name=name, when=when))
+        rec = box.addButton(_("Recover"), QMessageBox.AcceptRole)
+        box.addButton(_("Not now"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is rec:
+            if self.dirty and not self.maybe_save():
+                return
+            self.open_project(best["path"])
+
+    def open_autosave_dialog(self):
+        if not self.maybe_save():
+            return
+        os.makedirs(autosave.AUTOSAVE_DIR, exist_ok=True)
+        path, _f = QFileDialog.getOpenFileName(self, _("Open Auto-Saved Project…"),
+                                               autosave.AUTOSAVE_DIR,
+                                               f"{_('Kurgu project')} (*.kurgu)")
+        if path:
+            self.open_project(path)
+
     # ------------------------------------------------------------ render önbelleği
     def frame_sig(self) -> FrameSig:
         if self._sig is None or self._sig_ver != self.version or self._sig.p is not self.project:
@@ -854,9 +947,27 @@ class MainWindow(QMainWindow):
         self.on_edited()
 
     def unlink_selected(self):
+        sel = self.selected_clips()
+        if not sel:
+            return
         self.before_edit()
-        for c in self.selected_clips():
+        for c in sel:
             c.link_id = ""
+        # Bağ koptuktan sonra yalnızca görüntü seçili kalsın; ses tek tıkla seçilebilir
+        video = [c for c in sel if self.project.track_is_video(c.track)]
+        self.timeline.selected = {c.id for c in (video or sel[:1])}
+        self.statusBar().showMessage(_("Unlinked: video and audio can now be selected separately"),
+                                     4000)
+        self.on_edited()
+
+    def link_selected(self):
+        sel = self.selected_clips()
+        if len(sel) < 2:
+            return
+        self.before_edit()
+        lid = new_id()
+        for c in sel:
+            c.link_id = lid
         self.on_edited()
 
     def select_all(self):
@@ -923,6 +1034,7 @@ class MainWindow(QMainWindow):
         self.player.pause()
         self.project = Project()
         self.history = History()
+        self.session.update(uid=self.project.uid, project_path=None, last_autosave=None)
         self.thumbnails.clear()
         self.timeline.waves.clear()
         self.timeline.selected.clear()
@@ -963,13 +1075,18 @@ class MainWindow(QMainWindow):
         missing = [m.name for m in p.media.values() if not os.path.exists(m.path)]
         for m in p.media.values():
             self._make_thumb(m)
-        self.dirty = False
+        self.dirty = p.recovered
+        self.session.update(uid=p.uid, project_path=p.path, last_autosave=None)
         self.bin.rebuild()
         self.timeline.set_playhead(0.0, emit=False)
         self.timeline.setMinimumHeight(self.timeline.content_height())
         self.on_edited()
         self.timeline.zoom_fit()
-        self.settings.setValue("last_dir", os.path.dirname(path))
+        if not p.recovered:
+            self.settings.setValue("last_dir", os.path.dirname(path))
+        else:
+            self.statusBar().showMessage(
+                _("Recovered project opened. Save it (Ctrl+S) to keep the changes."), 10000)
         if missing:
             QMessageBox.warning(self, _("Missing media"), "\n".join(missing))
 
@@ -982,6 +1099,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Kurgu", str(e))
             return False
         self.dirty = False
+        self.project.recovered = False
+        self.session.update(uid=self.project.uid, project_path=self.project.path)
         self._update_title()
         self.statusBar().showMessage(f"{_('Saved to')} {self.project.path}", 4000)
         return True
@@ -1070,5 +1189,7 @@ class MainWindow(QMainWindow):
             return
         self.player.pause()
         self.worker.shutdown()
+        self.autosave_timer.stop()
+        self.session.end()  # düzgün kapanış: çökme kurtarma önerilmesin
         self.settings.setValue("geometry", self.saveGeometry())
         ev.accept()

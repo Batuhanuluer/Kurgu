@@ -1,0 +1,55 @@
+# Sürüm etiketi gönderilince (git tag v0.5.0 && git push --tags) Windows, macOS ve
+# Linux paketlerini derler ve GitHub "Releases" sayfasına yükler.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Linux bağımlılıkları
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0
+      - name: Inno Setup (Windows kurulum programı)
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+        continue-on-error: true
+      - run: pip install -r requirements.txt pyinstaller pillow pytest
+      - name: Testler
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+      - name: Paketle
+        run: python packaging/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kurgu-${{ matrix.os }}
+          path: dist/Kurgu-*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

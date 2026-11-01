@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kurgu
+GenericName=Video Editor
+GenericName[tr]=Video Düzenleyici
+Comment=Free, open-source video editor
+Comment[tr]=Özgür ve açık kaynak video düzenleyici
+Exec=Kurgu %f
+Icon=kurgu
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=application/x-kurgu;

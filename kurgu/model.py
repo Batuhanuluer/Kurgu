@@ -131,6 +131,8 @@ class Project:
         self.tracks: list[Track] = []
         self.clips: list[Clip] = []
         self.path: str | None = None
+        self.uid = new_id()  # otomatik kayıtları projeyle eşleştirmek için
+        self.recovered = False  # otomatik kayıttan açıldıysa
         self.markers: list[float] = []
         self.add_track("video")
         self.add_track("video")
@@ -469,6 +471,7 @@ class Project:
         return {
             "app": "Kurgu",
             "format_version": FORMAT_VERSION,
+            "uid": self.uid,
             "settings": {"width": self.width, "height": self.height, "fps": self.fps,
                          "sample_rate": self.sample_rate},
             "media": [asdict(m) for m in self.media.values()],
@@ -489,6 +492,7 @@ class Project:
             p.media[item.id] = item
         p.clips = [_from_dict(Clip, c) for c in data.get("clips", [])]
         p.markers = list(data.get("markers", []))
+        p.uid = data.get("uid") or p.uid
         return p
 
     def save(self, path: str):
@@ -517,6 +521,9 @@ class Project:
                     m["path"] = cand
         p = cls.from_dict(data)
         p.path = path
+        if "autosave" in data:  # otomatik kayıt: asıl dosyaya kaydedilsin
+            p.path = data["autosave"].get("original_path")
+            p.recovered = True
         return p
 
 

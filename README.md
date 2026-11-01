@@ -9,7 +9,19 @@
 hesap açmadan kullanabileceği, Python bilen herkesin katkı verebileceği,
 profesyonel iş akışına sahip bir video editörü yapmak.
 
-## Hızlı başlangıç
+## İndir ve kur
+
+En kolay yol: GitHub'daki **[Releases](https://github.com/Batuhanuluer/Kurgu/releases)**
+sayfasından işletim sisteminize uygun dosyayı indirin. Python kurmanız gerekmez.
+
+| Sistem | Dosya | Kurulum |
+|---|---|---|
+| Windows | `Kurgu-…-setup.exe` | Çalıştırın, ileri ileri. `.kurgu` dosyaları çift tıklayınca açılır |
+| Windows (taşınabilir) | `Kurgu-…-windows.zip` | Klasöre çıkarın, `Kurgu.exe`'ye çift tıklayın |
+| macOS | `Kurgu-…-macos.zip` | Çıkarın, `Kurgu.app`'i Uygulamalar'a taşıyın. İlk açılışta **sağ tık → Aç** (imzasız uygulama uyarısı) |
+| Linux | `Kurgu-…-linux-x86_64.tar.gz` | Çıkarın, `Kurgu/Kurgu` dosyasını çalıştırın. Ubuntu/Debian'da gerekirse: `sudo apt install libxcb-cursor0` |
+
+## Kaynaktan çalıştırma
 
 Gereken tek şey **Python 3.10 veya üstü** ([python.org](https://www.python.org/downloads/)).
 FFmpeg'i ayrıca kurmanıza gerek yok; PyAV kendi içinde getirir.
@@ -30,7 +42,23 @@ python -m venv .venv
 kurgu                              # veya: python -m kurgu
 ```
 
-## Özellikler (v0.4)
+### Kendi paketinizi üretmek
+
+- **Windows:** `paketle.bat`'a çift tıklayın → `dist\Kurgu\Kurgu.exe`.
+  [Inno Setup](https://jrsoftware.org/isdl.php) kuruluysa `Kurgu-…-setup.exe` kurulum programı da üretilir.
+- **macOS / Linux:** `python packaging/build.py`
+
+### Yeni sürüm yayınlamak (geliştiriciler için)
+
+```bash
+git tag v0.5.0
+git push --tags
+```
+
+GitHub Actions üç işletim sisteminde testleri çalıştırır, paketleri derler ve
+Releases sayfasına yükler (`.github/workflows/release.yml`).
+
+## Özellikler (v0.5)
 
 - **Medya kutusu:** video, ses ve görsel içe aktarma, küçük önizlemeler, sürükle-bırak
 - **Çok izli zaman çizelgesi:** sınırsız video ve ses izi, iz gizle/sessize al/kilitle
@@ -76,6 +104,10 @@ kurgu                              # veya: python -m kurgu
   kenarından sürükleyerek uzat/kısalt, Delete ile sil
 - **Efekt denetimleri:** denetçinin en üstünde; her efektin ayarı, aç/kapa, sırala, sil.
   Klipteki sarı **fx** rozetine tıklayınca doğrudan efektlere gider
+- **Otomatik kaydetme ve çökme kurtarma:** proje her 2 dakikada bir yedeklenir
+  (Dosya → Otomatik Kaydetme: kapalı / 1 / 2 / 5 / 10 dk; proje başına son 5 yedek).
+  Program beklenmedik şekilde kapanırsa bir sonraki açılışta son yedek önerilir.
+  Bir hata anında da hemen acil yedek alınır. Yedekler: `~/.kurgu/autosave/`
 - **Hata günlüğü:** beklenmeyen hatalar `~/.kurgu/kurgu.log` dosyasına yazılır
 - **Kararma:** giriş/çıkış kararması (görüntü ve ses)
 - **Kopyala / kes / yapıştır** ve **özellikleri yapıştır** (efekt, renk, hareket aktarımı)
@@ -130,6 +162,7 @@ kurgu/
   transitions.py  Video geçişleri
   rendercache.py  Render önbelleği, kare imzası, arka plan işçisi
   render.py       Katman birleştirme (QPainter), renk, ses miksajı, MP4 dışa aktarma
+  autosave.py     Otomatik kaydetme, oturum kilidi, çökme kurtarma
   i18n.py         Çeviriler
   ui/
     main_window.py  Menüler, kısayollar, proje işlemleri, dışa aktarma penceresi
@@ -138,6 +171,7 @@ kurgu/
     panels.py       Medya kutusu ve denetçi (efekt kontrolleri dahil)
     effects_panel.py Efektler paneli
 tests/            pytest testleri (sentetik videolarla)
+packaging/        PyInstaller paketleme, simge, Windows kurulum betiği (Inno Setup)
 ```
 
 Önizleme ve dışa aktarma **aynı** `Compositor` sınıfını kullanır; ekranda ne
@@ -160,7 +194,8 @@ Katkılarınızı bekleyen başlıca konular:
 - [ ] Diske kalıcı render dosyaları
 - [ ] Whisper ile otomatik altyazı
 - [ ] Daha fazla çıktı biçimi (ProRes, WebM, GIF)
-- [ ] Hazır paketler: Windows `.exe`, macOS `.app`, Linux AppImage / Flatpak
+- [x] Hazır paketler: Windows kurulum + taşınabilir zip, macOS `.app`, Linux tar.gz
+- [ ] Linux AppImage / Flatpak, imzalı macOS ve Windows paketleri
 - [ ] Yeni dil çevirileri (`kurgu/i18n.py`)
 
 ## Katkı

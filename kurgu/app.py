@@ -39,6 +39,7 @@ def apply_dark_theme(app: QApplication):
     """)
 
 
+EMERGENCY: list = []  # çökme anında çağrılacak acil kayıt fonksiyonları
 LOG_PATH = os.path.join(os.path.expanduser("~"), ".kurgu", "kurgu.log")
 _shown: set = set()
 
@@ -57,6 +58,11 @@ def log_error(text: str):
 def _excepthook(exc_type, exc, tb):
     text = "".join(traceback.format_exception(exc_type, exc, tb))
     log_error(text)
+    for cb in list(EMERGENCY):
+        try:
+            cb()
+        except Exception:
+            pass
     key = f"{exc_type.__name__}: {exc}"
     if key in _shown or QApplication.instance() is None:
         return
@@ -70,6 +76,16 @@ def run(path=None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Kurgu")
     app.setOrganizationName("Kurgu")
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icon.png")
+    if os.path.exists(icon):
+        from PySide6.QtGui import QIcon
+        app.setWindowIcon(QIcon(icon))
+    if sys.platform == "win32":  # görev çubuğunda Python yerine Kurgu simgesi görünsün
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kurgu.VideoEditor")
+        except Exception:
+            pass
     apply_dark_theme(app)
     from .ui.main_window import MainWindow
     w = MainWindow(path)
